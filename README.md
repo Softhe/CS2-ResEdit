@@ -10,6 +10,8 @@
 
 ### [Download the latest version](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip)
 
+[SHA-256 checksum](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip.sha256)
+
 </div>
 
 ![CS2 Video Config Editor dark interface](assets/cs2-video-config-editor.png)
@@ -102,7 +104,7 @@ Close CS2 before applying a change. A running game can overwrite its configurati
 
 ## Download
 
-The latest packaged script is available from [GitHub Releases](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest). The repository also contains the standalone PowerShell source for inspection and direct use.
+The latest packaged script and its SHA-256 checksum are available from [GitHub Releases](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest). The repository also contains the standalone PowerShell source for inspection and direct use.
 
 ## Project roadmap
 
