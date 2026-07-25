@@ -61,6 +61,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:SelectedConfigPath = $null
+$script:SteamId64Base = [uint64]76561197960265728
+$script:Cs2ConfigRelativePath = '730\local\cfg\cs2_video.txt'
+$script:VideoConfigFields = [ordered]@{
+    Width = 'setting.defaultres'
+    Height = 'setting.defaultresheight'
+    Mode = 'setting.aspectratiomode'
+}
 
 $script:Resolutions = @(
     [pscustomobject]@{ Width = 1024; Height = 768;  Ratio = '4:3';   Mode = '0' }
@@ -81,6 +88,42 @@ $script:Resolutions = @(
 function Write-Info {
     param([string]$Message, [ConsoleColor]$Color = 'Gray')
     if (-not $Silent) { Write-Host $Message -ForegroundColor $Color }
+}
+
+function ConvertTo-SteamId64 {
+    param([uint32]$AccountId)
+    ([uint64]$AccountId + $script:SteamId64Base).ToString()
+}
+
+function Format-SteamAccountDetails {
+    param([psobject]$Account)
+    if ($null -eq $Account -or [string]::IsNullOrWhiteSpace([string]$Account.AccountId)) {
+        return [string]$Account.PersonaName
+    }
+    "$($Account.PersonaName) | $(Format-SteamAccountIdentifiers $Account)"
+}
+
+function Format-SteamAccountIdentifiers {
+    param([psobject]$Account)
+    if ($null -eq $Account -or [string]::IsNullOrWhiteSpace([string]$Account.AccountId)) {
+        return 'Configuration selected manually'
+    }
+    "Account ID $($Account.AccountId) | SteamID64 $($Account.SteamId64)"
+}
+
+function New-CustomSteamAccount {
+    param([string]$Path)
+    [pscustomobject]@{
+        DisplayName = 'Custom configuration file'
+        AccountId = $null
+        SteamId64 = $null
+        PersonaName = 'Custom file'
+        AccountName = $null
+        MostRecent = $false
+        ConfigPath = $Path
+        HasConfig = (Test-Path -LiteralPath $Path -PathType Leaf)
+        LastWriteTime = [datetime]::MinValue
+    }
 }
 
 function ConvertTo-AspectMode {
@@ -134,6 +177,23 @@ function Resolve-Resolution {
     New-Resolution $width $height $mode
 }
 
+function Resolve-SelectedResolution {
+    param(
+        [string]$Selection,
+        [int]$CustomWidth,
+        [int]$CustomHeight,
+        [string]$Mode
+    )
+    if ($Selection -eq 'Custom...') {
+        return New-Resolution $CustomWidth $CustomHeight $Mode
+    }
+
+    $resolution = Resolve-Resolution $Selection
+    if ($null -eq $resolution) { throw "Invalid resolution selection '$Selection'." }
+    $resolution.Mode = $Mode
+    $resolution
+}
+
 function Get-SteamRoots {
     if ($SteamRoot) {
         if (-not (Test-Path -LiteralPath $SteamRoot -PathType Container)) { throw "Steam folder not found: $SteamRoot" }
@@ -177,7 +237,6 @@ function Get-SteamLoginUsers {
 }
 
 function Get-SteamAccounts {
-    $steamId64Base = [uint64]76561197960265728
     $accounts = foreach ($root in Get-SteamRoots) {
         $loginUsers = @{}
         foreach ($user in Get-SteamLoginUsers $root) { $loginUsers[$user.SteamId64] = $user }
@@ -185,11 +244,11 @@ function Get-SteamAccounts {
         if (-not (Test-Path -LiteralPath $userdata -PathType Container)) { continue }
 
         foreach ($directory in Get-ChildItem -LiteralPath $userdata -Directory -ErrorAction SilentlyContinue) {
-            $accountId = 0L
-            if (-not [long]::TryParse($directory.Name, [ref]$accountId) -or $accountId -lt 0) { continue }
-            $steamId64 = ([uint64]$accountId + $steamId64Base).ToString()
+            $accountId = [uint32]0
+            if (-not [uint32]::TryParse($directory.Name, [ref]$accountId)) { continue }
+            $steamId64 = ConvertTo-SteamId64 $accountId
             $login = $loginUsers[$steamId64]
-            $configPath = Join-Path $directory.FullName '730\local\cfg\cs2_video.txt'
+            $configPath = Join-Path $directory.FullName $script:Cs2ConfigRelativePath
             $hasConfig = Test-Path -LiteralPath $configPath -PathType Leaf
             $personaName = if ($login -and $login.PersonaName) { $login.PersonaName } else { "Steam account $accountId" }
             $displayName = "$personaName  -  Account ID $accountId  -  SteamID64 $steamId64"
@@ -250,9 +309,9 @@ function Get-CurrentConfig {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Configuration file not found: $Path" }
     $file = Get-TextFileInfo $Path
     [pscustomobject]@{
-        Width = [int](Get-ConfigValue $file.Text 'setting.defaultres')
-        Height = [int](Get-ConfigValue $file.Text 'setting.defaultresheight')
-        Mode = Get-ConfigValue $file.Text 'setting.aspectratiomode'
+        Width = [int](Get-ConfigValue $file.Text $script:VideoConfigFields.Width)
+        Height = [int](Get-ConfigValue $file.Text $script:VideoConfigFields.Height)
+        Mode = Get-ConfigValue $file.Text $script:VideoConfigFields.Mode
     }
 }
 
@@ -279,9 +338,10 @@ function Update-VideoConfig {
     $file = Get-TextFileInfo $Path
 
     # Validate and update every required entry in memory before touching the file.
-    $updated = Set-ConfigValue $file.Text 'setting.defaultres' ([string]$Resolution.Width)
-    $updated = Set-ConfigValue $updated 'setting.defaultresheight' ([string]$Resolution.Height)
-    $updated = Set-ConfigValue $updated 'setting.aspectratiomode' ([string]$Resolution.Mode)
+    $updated = $file.Text
+    foreach ($property in $script:VideoConfigFields.Keys) {
+        $updated = Set-ConfigValue $updated $script:VideoConfigFields[$property] ([string]$Resolution.$property)
+    }
     if ($updated -ceq $file.Text) {
         return [pscustomobject]@{ Changed = $false; BackupPath = $null }
     }
@@ -358,16 +418,13 @@ function Show-ConsoleEditor {
     }
 }
 
-
-function Show-ModernGraphicalEditor {
-    param([object[]]$SteamAccounts, [string]$InitialPath)
-
+function Initialize-Cs2GraphicalInterface {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [Windows.Forms.Application]::EnableVisualStyles()
 
-    if (-not ('Cs2UiNativeWindow' -as [type])) {
-        Add-Type -TypeDefinition @'
+    if ('Cs2UiNativeWindow' -as [type]) { return }
+    Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
@@ -399,11 +456,12 @@ public static class Cs2UiNativeWindow
     }
 }
 '@
-    }
+}
 
-    $highContrast = [Windows.Forms.SystemInformation]::HighContrast
-    if ($highContrast) {
-        $theme = [pscustomobject]@{
+function Get-Cs2UiTheme {
+    param([bool]$HighContrast)
+    if ($HighContrast) {
+        return [pscustomobject]@{
             Background = [Drawing.SystemColors]::Window
             Card = [Drawing.SystemColors]::Control
             CardHover = [Drawing.SystemColors]::ControlLight
@@ -421,26 +479,61 @@ public static class Cs2UiNativeWindow
             ErrorBack = [Drawing.SystemColors]::Control
             ErrorText = [Drawing.SystemColors]::WindowText
         }
-    } else {
-        $theme = [pscustomobject]@{
-            Background = [Drawing.Color]::FromArgb(24, 26, 31)
-            Card = [Drawing.Color]::FromArgb(32, 35, 42)
-            CardHover = [Drawing.Color]::FromArgb(42, 46, 55)
-            Input = [Drawing.Color]::FromArgb(39, 43, 51)
-            Border = [Drawing.Color]::FromArgb(58, 63, 72)
-            Text = [Drawing.Color]::FromArgb(242, 244, 247)
-            Muted = [Drawing.Color]::FromArgb(166, 174, 187)
-            Primary = [Drawing.Color]::FromArgb(74, 130, 247)
-            PrimaryHover = [Drawing.Color]::FromArgb(92, 145, 250)
-            PrimaryText = [Drawing.Color]::White
-            SuccessBack = [Drawing.Color]::FromArgb(24, 66, 46)
-            SuccessText = [Drawing.Color]::FromArgb(134, 239, 172)
-            WarningBack = [Drawing.Color]::FromArgb(69, 52, 25)
-            WarningText = [Drawing.Color]::FromArgb(251, 191, 74)
-            ErrorBack = [Drawing.Color]::FromArgb(70, 34, 38)
-            ErrorText = [Drawing.Color]::FromArgb(251, 113, 133)
-        }
     }
+
+    [pscustomobject]@{
+        Background = [Drawing.Color]::FromArgb(24, 26, 31)
+        Card = [Drawing.Color]::FromArgb(32, 35, 42)
+        CardHover = [Drawing.Color]::FromArgb(42, 46, 55)
+        Input = [Drawing.Color]::FromArgb(39, 43, 51)
+        Border = [Drawing.Color]::FromArgb(58, 63, 72)
+        Text = [Drawing.Color]::FromArgb(242, 244, 247)
+        Muted = [Drawing.Color]::FromArgb(166, 174, 187)
+        Primary = [Drawing.Color]::FromArgb(74, 130, 247)
+        PrimaryHover = [Drawing.Color]::FromArgb(92, 145, 250)
+        PrimaryText = [Drawing.Color]::White
+        SuccessBack = [Drawing.Color]::FromArgb(24, 66, 46)
+        SuccessText = [Drawing.Color]::FromArgb(134, 239, 172)
+        WarningBack = [Drawing.Color]::FromArgb(69, 52, 25)
+        WarningText = [Drawing.Color]::FromArgb(251, 191, 74)
+        ErrorBack = [Drawing.Color]::FromArgb(70, 34, 38)
+        ErrorText = [Drawing.Color]::FromArgb(251, 113, 133)
+    }
+}
+
+function New-Cs2UiRoundedPath {
+    param($Bounds, [int]$Radius)
+    $diameter = $Radius * 2
+    $path = New-Object Drawing.Drawing2D.GraphicsPath
+    if ($Bounds.Width -le $diameter -or $Bounds.Height -le $diameter) {
+        $path.AddRectangle($Bounds)
+        return $path
+    }
+    $path.AddArc($Bounds.Left, $Bounds.Top, $diameter, $diameter, 180, 90)
+    $path.AddArc($Bounds.Right - $diameter, $Bounds.Top, $diameter, $diameter, 270, 90)
+    $path.AddArc($Bounds.Right - $diameter, $Bounds.Bottom - $diameter, $diameter, $diameter, 0, 90)
+    $path.AddArc($Bounds.Left, $Bounds.Bottom - $diameter, $diameter, $diameter, 90, 90)
+    $path.CloseFigure()
+    $path
+}
+
+function Set-Cs2UiRoundedRegion {
+    param($Control, [int]$Radius)
+    if ($Control.Width -le 1 -or $Control.Height -le 1) { return }
+    $bounds = New-Object Drawing.Rectangle(0, 0, $Control.Width, $Control.Height)
+    $path = New-Cs2UiRoundedPath $bounds $Radius
+    $oldRegion = $Control.Region
+    $Control.Region = New-Object Drawing.Region($path)
+    $path.Dispose()
+    if ($oldRegion) { $oldRegion.Dispose() }
+}
+
+function Show-ModernGraphicalEditor {
+    param([object[]]$SteamAccounts, [string]$InitialPath)
+
+    Initialize-Cs2GraphicalInterface
+    $highContrast = [Windows.Forms.SystemInformation]::HighContrast
+    $theme = Get-Cs2UiTheme $highContrast
 
     $installedFonts = New-Object Drawing.Text.InstalledFontCollection
     $fontFamily = if ($installedFonts.Families.Name -contains 'Segoe UI Variable') { 'Segoe UI Variable' } else { 'Segoe UI' }
@@ -450,33 +543,6 @@ public static class Cs2UiNativeWindow
     $fontSection = New-Object Drawing.Font($fontFamily, 11, [Drawing.FontStyle]::Bold)
     $fontTitle = New-Object Drawing.Font($fontFamily, 19, [Drawing.FontStyle]::Bold)
 
-    function New-UiRoundedPath {
-        param([Drawing.Rectangle]$Bounds, [int]$Radius)
-        $diameter = $Radius * 2
-        $path = New-Object Drawing.Drawing2D.GraphicsPath
-        if ($Bounds.Width -le $diameter -or $Bounds.Height -le $diameter) {
-            $path.AddRectangle($Bounds)
-            return $path
-        }
-        $path.AddArc($Bounds.Left, $Bounds.Top, $diameter, $diameter, 180, 90)
-        $path.AddArc($Bounds.Right - $diameter, $Bounds.Top, $diameter, $diameter, 270, 90)
-        $path.AddArc($Bounds.Right - $diameter, $Bounds.Bottom - $diameter, $diameter, $diameter, 0, 90)
-        $path.AddArc($Bounds.Left, $Bounds.Bottom - $diameter, $diameter, $diameter, 90, 90)
-        $path.CloseFigure()
-        return $path
-    }
-
-    $setRoundedRegion = {
-        param([Windows.Forms.Control]$Control, [int]$Radius)
-        if ($Control.Width -le 1 -or $Control.Height -le 1) { return }
-        $bounds = New-Object Drawing.Rectangle(0, 0, $Control.Width, $Control.Height)
-        $path = New-UiRoundedPath $bounds $Radius
-        $oldRegion = $Control.Region
-        $Control.Region = New-Object Drawing.Region($path)
-        $path.Dispose()
-        if ($oldRegion) { $oldRegion.Dispose() }
-    }
-
     $newCard = {
         $card = New-Object Windows.Forms.Panel
         $card.Dock = 'Fill'
@@ -484,12 +550,12 @@ public static class Cs2UiNativeWindow
         $card.ForeColor = $theme.Text
         $card.Padding = New-Object Windows.Forms.Padding(18, 14, 18, 14)
         $card.Margin = New-Object Windows.Forms.Padding(0)
-        $card.Add_Resize({ param($sender, $eventArgs) & $setRoundedRegion $sender 12 })
+        $card.Add_Resize({ param($sender, $eventArgs) Set-Cs2UiRoundedRegion $sender 12 })
         $card.Add_Paint({
             param($sender, $eventArgs)
             $eventArgs.Graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
             $bounds = New-Object Drawing.Rectangle(0, 0, ($sender.Width - 1), ($sender.Height - 1))
-            $path = New-UiRoundedPath $bounds 12
+            $path = New-Cs2UiRoundedPath $bounds 12
             $pen = New-Object Drawing.Pen($theme.Border, 1)
             $eventArgs.Graphics.DrawPath($pen, $path)
             $pen.Dispose(); $path.Dispose()
@@ -594,7 +660,7 @@ public static class Cs2UiNativeWindow
         $primaryBounds = New-Object Drawing.RectangleF(($eventArgs.Bounds.X + 10), ($eventArgs.Bounds.Y + 3), ($eventArgs.Bounds.Width - 20), 18)
         $secondaryBounds = New-Object Drawing.RectangleF(($eventArgs.Bounds.X + 10), ($eventArgs.Bounds.Y + 21), ($eventArgs.Bounds.Width - 20), 15)
         $eventArgs.Graphics.DrawString([string]$account.PersonaName, $fontNormal, $primaryBrush, $primaryBounds, $format)
-        $details = "Account ID $($account.AccountId)  |  SteamID64 $($account.SteamId64)"
+        $details = Format-SteamAccountIdentifiers $account
         $eventArgs.Graphics.DrawString($details, $fontSmall, $secondaryBrush, $secondaryBounds, $format)
         $primaryBrush.Dispose(); $secondaryBrush.Dispose(); $format.Dispose()
         $eventArgs.DrawFocusRectangle()
@@ -620,7 +686,7 @@ public static class Cs2UiNativeWindow
     $currentLabel = New-Object Windows.Forms.Label
     $currentLabel.Text = 'Checking configuration...'; $currentLabel.Dock = 'Fill'; $currentLabel.Margin = New-Object Windows.Forms.Padding(0, 4, 0, 0)
     $currentLabel.Padding = New-Object Windows.Forms.Padding(10, 0, 10, 0); $currentLabel.TextAlign = 'MiddleLeft'; $currentLabel.BackColor = $theme.CardHover; $currentLabel.ForeColor = $theme.Muted
-    $currentLabel.Add_Resize({ param($sender, $eventArgs) & $setRoundedRegion $sender 7 })
+    $currentLabel.Add_Resize({ param($sender, $eventArgs) Set-Cs2UiRoundedRegion $sender 7 })
     $accountLayout.Controls.Add($currentLabel, 0, 4); $accountLayout.SetColumnSpan($currentLabel, 2)
 
     $displayCard = & $newCard
@@ -702,9 +768,9 @@ public static class Cs2UiNativeWindow
     $statusLabel = New-Object Windows.Forms.Label
     $statusLabel.Dock = 'Fill'; $statusLabel.Margin = New-Object Windows.Forms.Padding(0); $statusLabel.Padding = New-Object Windows.Forms.Padding(14, 0, 14, 0)
     $statusLabel.TextAlign = 'MiddleLeft'; $statusLabel.BackColor = $theme.CardHover; $statusLabel.ForeColor = $theme.Muted; $statusLabel.AutoEllipsis = $true
-    $statusLabel.Add_Resize({ param($sender, $eventArgs) & $setRoundedRegion $sender 8 })
+    $statusLabel.Add_Resize({ param($sender, $eventArgs) Set-Cs2UiRoundedRegion $sender 8 })
     $body.Controls.Add($statusLabel, 0, 4)
-    & $setRoundedRegion $statusLabel 8
+        Set-Cs2UiRoundedRegion $statusLabel 8
     $statusToolTip = New-Object Windows.Forms.ToolTip
     $setStatus = {
         param([string]$Text, [string]$Kind = 'Neutral', [string]$Details = '')
@@ -806,7 +872,7 @@ public static class Cs2UiNativeWindow
     $accountBox.Add_SelectionChangeCommitted({
         if ($accountBox.SelectedItem) {
             $pathBox.Text = $accountBox.SelectedItem.ConfigPath
-            $accountDetails = "$($accountBox.SelectedItem.PersonaName) | Account ID $($accountBox.SelectedItem.AccountId) | SteamID64 $($accountBox.SelectedItem.SteamId64)"
+            $accountDetails = Format-SteamAccountDetails $accountBox.SelectedItem
             $accountToolTip.SetToolTip($accountBox, $accountDetails); $accountBox.AccessibleDescription = $accountDetails
             & $refreshCurrent
         }
@@ -836,8 +902,7 @@ public static class Cs2UiNativeWindow
             $path = $pathBox.Text.Trim()
             [void](Get-CurrentConfig $path)
             $mode = & $getSelectedMode
-            if ($resolutionBox.SelectedItem -eq 'Custom...') { $selected = New-Resolution ([int]$widthBox.Value) ([int]$heightBox.Value) $mode }
-            else { $selected = Resolve-Resolution ([string]$resolutionBox.SelectedItem); $selected.Mode = $mode }
+            $selected = Resolve-SelectedResolution ([string]$resolutionBox.SelectedItem) ([int]$widthBox.Value) ([int]$heightBox.Value) $mode
             if (Get-Process -Name 'cs2' -ErrorAction SilentlyContinue) {
                 & $setStatus 'CS2 is running and may overwrite this change.' 'Warning'
                 $answer = [Windows.Forms.MessageBox]::Show('CS2 is running and may overwrite this change when it closes. Apply anyway?', 'CS2 is running', 'YesNo', 'Warning')
@@ -861,7 +926,7 @@ public static class Cs2UiNativeWindow
     if ($accountBox.Items.Count -gt 0) {
         $selectedAccount = $SteamAccounts | Where-Object ConfigPath -eq $InitialPath | Select-Object -First 1
         if ($selectedAccount) { $accountBox.SelectedItem = $selectedAccount } else { $accountBox.SelectedIndex = 0 }
-        $accountDetails = "$($accountBox.SelectedItem.PersonaName) | Account ID $($accountBox.SelectedItem.AccountId) | SteamID64 $($accountBox.SelectedItem.SteamId64)"
+        $accountDetails = Format-SteamAccountDetails $accountBox.SelectedItem
         $accountToolTip.SetToolTip($accountBox, $accountDetails); $accountBox.AccessibleDescription = $accountDetails
     }
     $ratioButtons['1'].Checked = $true
@@ -902,14 +967,7 @@ try {
         $result = Update-VideoConfig $script:SelectedConfigPath $appliedResolution (-not $NoBackup)
     } else {
         if ($script:SelectedConfigPath -and $script:SelectedConfigPath -notin $discoveredPaths) {
-            $steamAccounts = @(
-                [pscustomobject]@{
-                    DisplayName = 'Custom configuration file'
-                    AccountId = $null; SteamId64 = $null; PersonaName = 'Custom file'; AccountName = $null
-                    MostRecent = $false; ConfigPath = $script:SelectedConfigPath
-                    HasConfig = (Test-Path -LiteralPath $script:SelectedConfigPath -PathType Leaf); LastWriteTime = [datetime]::MinValue
-                }
-            ) + $steamAccounts
+            $steamAccounts = @(New-CustomSteamAccount $script:SelectedConfigPath) + $steamAccounts
         }
         $dialogOutput = @(Show-ModernGraphicalEditor $steamAccounts $script:SelectedConfigPath)
         $selection = $dialogOutput | Where-Object {

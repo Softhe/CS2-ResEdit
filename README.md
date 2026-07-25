@@ -103,3 +103,7 @@ Close CS2 before applying a change. A running game can overwrite its configurati
 ## Download
 
 The latest packaged script is available from [GitHub Releases](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest). The repository also contains the standalone PowerShell source for inspection and direct use.
+
+## Project roadmap
+
+See the [five-step roadmap to v2.0](ROADMAP.md) for the planned architecture, testing, recovery, usability, and release-engineering work.
