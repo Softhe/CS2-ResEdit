@@ -2,110 +2,156 @@
 
 # CS2 Video Config Editor
 
-**Safely edit Counter-Strike 2 resolution settings with a modern Windows interface.**
+Safely change Counter-Strike 2 resolution settings from a modern Windows interface.
 
-[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)](https://learn.microsoft.com/powershell/)
-[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows11&logoColor=white)](#requirements)
-[![No dependencies](https://img.shields.io/badge/dependencies-none-2EA44F)](#requirements)
+[![Latest release](https://img.shields.io/github/v/release/Softhe/CS2-VideoConfig-Editor?display_name=tag&sort=semver&style=flat-square)](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest)
+[![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white&style=flat-square)](https://learn.microsoft.com/powershell/)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows11&logoColor=white&style=flat-square)](#requirements)
+[![No dependencies](https://img.shields.io/badge/dependencies-none-2EA44F?style=flat-square)](#requirements)
 
-### [Download the latest version](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip)
+### [Download the latest ZIP](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip)
 
-[SHA-256 checksum](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip.sha256)
+[View releases](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest) ·
+[SHA-256 checksum](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip.sha256) ·
+[Roadmap](ROADMAP.md)
 
 </div>
 
-![CS2 Video Config Editor dark interface](assets/cs2-video-config-editor.png)
+<p align="center">
+  <img src="assets/cs2-video-config-editor.png" alt="CS2 Video Config Editor showing Steam account and display settings" width="780">
+</p>
 
-## Why use it?
+## Overview
 
-CS2 Video Config Editor finds the video configuration for each local Steam account and lets you change resolution settings without manually editing Valve configuration files.
+CS2 Video Config Editor finds the video configuration for each local Steam account and updates the selected resolution without requiring manual VDF editing.
 
-- Detects multiple Steam accounts and shows their local PersonaName, Account ID, and SteamID64.
-- Provides common `4:3 / 5:4`, `16:9`, and `16:10` presets plus custom dimensions.
-- Validates the selected `cs2_video.txt` before enabling changes.
-- Preserves the file encoding and line endings.
-- Writes changes atomically and creates a timestamped backup by default.
-- Warns if CS2 is running and may overwrite the configuration later.
-- Includes graphical, interactive console, and automation-friendly command-line modes.
-- Uses only Windows PowerShell/PowerShell and built-in .NET assemblies.
-
-Account names are read locally from Steam's `loginusers.vdf`. No Steam Web API key or network account lookup is required.
+| Capability | What it does |
+| --- | --- |
+| **Multiple Steam accounts** | Shows each local PersonaName, Account ID, and SteamID64. |
+| **Common and custom resolutions** | Includes `4:3 / 5:4`, `16:9`, and `16:10` presets plus exact custom dimensions. |
+| **Safe file updates** | Validates required entries, preserves encoding and line endings, and replaces the file atomically. |
+| **Automatic backups** | Creates a timestamped `.bak` copy before a change unless explicitly disabled. |
+| **Flexible operation** | Supports the graphical editor, an interactive console, and automation-friendly parameters. |
+| **Local and private** | Reads Steam account names locally; no API key, login, or online account lookup is used. |
 
 ## Quick start
 
 1. [Download the latest ZIP](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip).
-2. Extract it anywhere.
-3. Run `CS2-VideoConfig-Editor.ps1` with Windows PowerShell or PowerShell.
-4. Select your Steam account and display settings, then choose **Apply changes**.
+2. Extract the archive.
+3. Close Counter-Strike 2.
+4. Right-click `CS2-VideoConfig-Editor.ps1` and select **Run with PowerShell**.
+5. Choose a Steam account and resolution, then select **Apply changes**.
 
-If Windows marks the downloaded script as blocked, right-click the ZIP before extracting it, choose **Properties**, select **Unblock**, and apply the change. You can also run:
-
-```powershell
-Unblock-File .\CS2-VideoConfig-Editor.ps1
-```
-
-## Command-line usage
-
-Launch the graphical editor:
+You can also launch it from a PowerShell prompt:
 
 ```powershell
 .\CS2-VideoConfig-Editor.ps1
 ```
 
-Open the interactive console editor:
+If Windows blocked the downloaded file, right-click the ZIP before extracting it, open **Properties**, select **Unblock**, and apply the change. Alternatively:
+
+```powershell
+Unblock-File .\CS2-VideoConfig-Editor.ps1
+```
+
+## How account discovery works
+
+The editor searches Steam's local `userdata` folders and converts each 32-bit Account ID to its SteamID64. Persona names are matched from Steam's local `config\loginusers.vdf`.
+
+The usual configuration location is:
+
+```text
+C:\Program Files (x86)\Steam\userdata\<AccountID>\730\local\cfg\cs2_video.txt
+```
+
+Use **Browse** or `-FilePath` when Steam or the configuration is stored elsewhere.
+
+## Command-line usage
+
+### Graphical editor
+
+```powershell
+.\CS2-VideoConfig-Editor.ps1
+```
+
+### Interactive console
 
 ```powershell
 .\CS2-VideoConfig-Editor.ps1 -Console
 ```
 
-Apply a preset automatically:
+### Apply a resolution directly
 
 ```powershell
 .\CS2-VideoConfig-Editor.ps1 -Preset 1920x1080
 ```
 
-Set an explicit aspect mode and configuration file:
+For a custom configuration path or explicit aspect mode:
 
 ```powershell
 .\CS2-VideoConfig-Editor.ps1 `
-  -FilePath 'C:\Program Files (x86)\Steam\userdata\123456\730\local\cfg\cs2_video.txt' `
+  -FilePath 'D:\Steam\userdata\123456\730\local\cfg\cs2_video.txt' `
   -Preset 1440x1080 `
   -AspectRatioMode 4:3
 ```
 
-List discovered accounts:
+List discovered Steam accounts:
 
 ```powershell
 .\CS2-VideoConfig-Editor.ps1 -ListAccounts
 ```
 
-Useful switches:
+### Parameters
 
-| Option | Purpose |
+| Parameter | Description |
 | --- | --- |
 | `-FilePath <path>` | Use a specific `cs2_video.txt`. |
 | `-SteamRoot <path>` | Search a nonstandard Steam installation. |
-| `-Preset <width>x<height>` | Apply a preset or custom resolution. |
-| `-AspectRatioMode <value>` | Use `4:3`, `16:9`, `16:10`, or modes `0`, `1`, `2`. |
-| `-NoBackup` | Apply without retaining a timestamped backup. |
-| `-Silent` | Suppress informational output; requires `-Preset`. |
+| `-Preset <width>x<height>` | Apply a predefined or custom resolution. A one-based preset number is also accepted. |
+| `-AspectRatioMode <value>` | Use `4:3`, `16:9`, `16:10`, or the corresponding modes `0`, `1`, `2`. |
+| `-Console` | Open the interactive console instead of the graphical editor. |
+| `-ListAccounts` | Print locally discovered accounts and configuration paths. |
+| `-NoBackup` | Apply the change without retaining a timestamped backup. |
+| `-Silent` | Suppress informational output. Requires `-Preset`. |
+
+## Safety and recovery
+
+- Close CS2 before applying a change. A running game may overwrite its configuration when it exits.
+- Keep **Create a timestamped backup** enabled unless you have another recovery method.
+- Backups are written beside the original file as `cs2_video.txt.<timestamp>.bak`.
+- To restore one manually, close CS2, preserve the current file if needed, and replace `cs2_video.txt` with the selected backup.
+
+The editor validates all required settings in memory before writing. An invalid or incomplete configuration is rejected without modifying the file.
+
+## Verify the download
+
+Download both release assets into the same directory:
+
+- `CS2-VideoConfig-Editor.zip`
+- `CS2-VideoConfig-Editor.zip.sha256`
+
+Then run:
+
+```powershell
+$expected = (Get-Content .\CS2-VideoConfig-Editor.zip.sha256).Split()[0]
+$actual = (Get-FileHash .\CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$actual -eq $expected
+```
+
+The result should be `True`.
 
 ## Requirements
 
 - Windows 10 or Windows 11
 - Windows PowerShell 5.1 or PowerShell 7+
-- Counter-Strike 2 installed through Steam, or an explicit path to a valid `cs2_video.txt`
+- Counter-Strike 2 installed through Steam, or a valid `cs2_video.txt` supplied manually
 
-No installation, administrator rights, API key, or third-party PowerShell module is required.
+No installation, administrator rights, Steam Web API key, or third-party PowerShell module is required.
 
-## Safety
+## Roadmap
 
-Close CS2 before applying a change. A running game can overwrite its configuration when it exits. Backups are stored next to the original file with a timestamped `.bak` suffix and can be restored by replacing `cs2_video.txt` with the backup.
+See the [five-step roadmap to v2.0](ROADMAP.md) for planned work on modularization, automated testing, backup restoration, discovery improvements, and reproducible releases.
 
-## Download
+## Releases
 
-The latest packaged script and its SHA-256 checksum are available from [GitHub Releases](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest). The repository also contains the standalone PowerShell source for inspection and direct use.
-
-## Project roadmap
-
-See the [five-step roadmap to v2.0](ROADMAP.md) for the planned architecture, testing, recovery, usability, and release-engineering work.
+Release notes, packaged downloads, and checksums are available on the [GitHub Releases page](https://github.com/Softhe/CS2-VideoConfig-Editor/releases).
