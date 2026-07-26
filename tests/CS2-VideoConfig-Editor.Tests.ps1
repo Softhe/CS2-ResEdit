@@ -37,17 +37,18 @@ Describe 'Steam account discovery' {
         $configPath = Join-Path $root 'userdata\424242\730\local\cfg\cs2_video.txt'
         Write-TestConfig $configPath
         $steamId64 = ConvertTo-SteamId64 424242
-        $loginUsers = @"
-"users"`r
-{`r
-    "$steamId64"`r
-    {`r
-        "AccountName"   "fixture"`r
-        "PersonaName"   "Fixture Persona"`r
-        "MostRecent"    "1"`r
-    }`r
-}`r
-"@
+        $loginUsers = @(
+            '"users"'
+            '{'
+            "    `"$steamId64`""
+            '    {'
+            '        "AccountName"   "fixture"'
+            '        "PersonaName"   "Fixture Persona"'
+            '        "MostRecent"    "1"'
+            '    }'
+            '}'
+        ) -join "`r`n"
+        $loginUsers += "`r`n"
         [IO.Directory]::CreateDirectory((Join-Path $root 'config')) | Out-Null
         [IO.File]::WriteAllText((Join-Path $root 'config\loginusers.vdf'), $loginUsers, (New-Object Text.UTF8Encoding($false)))
         $accounts = @(Get-SteamAccounts @($root))
