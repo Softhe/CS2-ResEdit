@@ -24,6 +24,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Restore canonical repository line endings
+        shell: pwsh
+        run: git -c core.autocrlf=false checkout-index --force --all
+
       - name: Validate tag and source version
         shell: pwsh
         run: |

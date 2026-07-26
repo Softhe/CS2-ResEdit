@@ -21,8 +21,8 @@
 
 - [x] Review the complete uncommitted diff.
 - [x] Approve the v1.2.0 release notes and screenshot.
-- [ ] Commit the intended release-candidate files.
-- [ ] Push the commit and confirm the Test workflow succeeds.
-- [ ] Create and push the signed or annotated `v1.2.0` tag.
-- [ ] Confirm the Release workflow publishes the ZIP and checksum.
-- [ ] Download the published assets and compare their hashes with the workflow output.
+- [x] Commit the intended release-candidate files.
+- [x] Push the commit and confirm the Test workflow succeeds.
+- [x] Create and push the signed or annotated `v1.2.0` tag.
+- [x] Confirm the Release workflow publishes the ZIP and checksum.
+- [x] Download the published assets and compare their hashes with the workflow output.

@@ -23,6 +23,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Restore canonical repository line endings
+        shell: pwsh
+        run: git -c core.autocrlf=false checkout-index --force --all
+
       - name: Test with Windows PowerShell 5.1
         shell: powershell
         run: |
