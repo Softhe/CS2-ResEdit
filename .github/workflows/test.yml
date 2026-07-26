@@ -45,38 +45,70 @@ jobs:
           $result = Invoke-Pester -Path ./tests -PassThru
           if ($result.FailedCount -gt 0) { exit 1 }
 
-      - name: Parser, ASCII, and diff checks
+      - name: Runtime parser, ASCII, and diff checks
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [void][Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path ./CS2-VideoConfig-Editor.ps1),
-            [ref]$tokens,
-            [ref]$errors
-          )
-          if ($errors.Count) { throw ($errors -join [Environment]::NewLine) }
-          $bytes = [IO.File]::ReadAllBytes((Resolve-Path ./CS2-VideoConfig-Editor.ps1))
-          if (@($bytes | Where-Object { $_ -gt 127 }).Count) { throw 'Source is not ASCII-compatible.' }
+          $releaseManifest = Import-PowerShellDataFile ./build/ReleaseFiles.psd1
+          foreach ($relativePath in $releaseManifest.Files) {
+            $path = Resolve-Path $relativePath
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count) { throw ($errors -join [Environment]::NewLine) }
+            $bytes = [IO.File]::ReadAllBytes($path)
+            if (@($bytes | Where-Object { $_ -gt 127 }).Count) {
+              throw "Runtime file is not ASCII-compatible: $relativePath"
+            }
+          }
           git diff --check
 
-      - name: Build and verify deterministic release artifacts
+      - name: Build twice with Windows PowerShell 5.1
         shell: powershell
+        env:
+          REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.REQUIRE_AUTHENTICODE_SIGNATURE }}
         run: |
           . .\CS2-VideoConfig-Editor.ps1
           $version = $script:ApplicationVersion
           .\build\Build-Release.ps1 -Version $version -OutputDirectory .\dist
-          .\build\Build-Release.ps1 -Version $version -OutputDirectory .\repeat
+          .\build\Build-Release.ps1 -Version $version -OutputDirectory .\repeat-winps
           $firstHash = (Get-FileHash .\dist\CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
-          $repeatHash = (Get-FileHash .\repeat\CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
+          $repeatHash = (Get-FileHash .\repeat-winps\CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
           if ($firstHash -ne $repeatHash) { throw 'Release build is not deterministic.' }
-          $checksum = (Get-Content .\dist\CS2-VideoConfig-Editor.zip.sha256 -Raw).Trim()
-          $expected = "$($firstHash.ToLowerInvariant())  CS2-VideoConfig-Editor.zip"
-          if ($checksum -ne $expected) { throw 'Release checksum does not match the ZIP.' }
+          $verification = @{ ArtifactDirectory = '.\dist' }
+          if ($env:REQUIRE_AUTHENTICODE_SIGNATURE -eq 'true') {
+            $verification.RequireAuthenticodeSignature = $true
+          }
+          .\build\Test-ReleaseArtifacts.ps1 @verification
+          $verification.ArtifactDirectory = '.\repeat-winps'
+          .\build\Test-ReleaseArtifacts.ps1 @verification
           Expand-Archive .\dist\CS2-VideoConfig-Editor.zip .\package-check
-          $sourceHash = (Get-FileHash .\CS2-VideoConfig-Editor.ps1 -Algorithm SHA256).Hash
-          $packageHash = (Get-FileHash .\package-check\CS2-VideoConfig-Editor.ps1 -Algorithm SHA256).Hash
-          if ($sourceHash -ne $packageHash) { throw 'Packaged source hash mismatch.' }
+          . .\package-check\CS2-VideoConfig-Editor.ps1
+          if ($script:ApplicationVersion -ne $version) {
+            throw 'Extracted release package failed its launcher smoke test.'
+          }
+
+      - name: Reproduce release assets with PowerShell 7
+        shell: pwsh
+        env:
+          REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.REQUIRE_AUTHENTICODE_SIGNATURE }}
+        run: |
+          . ./CS2-VideoConfig-Editor.ps1
+          $version = $script:ApplicationVersion
+          ./build/Build-Release.ps1 -Version $version -OutputDirectory ./repeat-pwsh
+          $firstHash = (Get-FileHash ./dist/CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
+          $repeatHash = (Get-FileHash ./repeat-pwsh/CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
+          if ($firstHash -ne $repeatHash) {
+            throw 'Release build differs between Windows PowerShell 5.1 and PowerShell 7.'
+          }
+          $verification = @{ ArtifactDirectory = './repeat-pwsh' }
+          if ($env:REQUIRE_AUTHENTICODE_SIGNATURE -eq 'true') {
+            $verification.RequireAuthenticodeSignature = $true
+          }
+          ./build/Test-ReleaseArtifacts.ps1 @verification
 
       - name: Upload verified release candidate
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

@@ -36,12 +36,13 @@ CS2 Video Config Editor finds the video configuration for each local Steam accou
 | **Responsive workflow** | Compares current and pending settings, supports Reset, and reflows for narrow windows. |
 | **Remembered files** | Remembers the last Steam account and up to five recent custom files locally. |
 | **Flexible operation** | Supports the graphical editor, an interactive console, and automation-friendly parameters. |
+| **Private diagnostics** | Exports a read-only JSON support report with paths and Steam identifiers anonymized. |
 | **Local and private** | Reads Steam account names locally; no API key, login, or online account lookup is used. |
 
 ## Quick start
 
 1. [Download the latest ZIP](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip).
-2. Extract the archive.
+2. Extract the complete archive, keeping the `modules` folder beside `CS2-VideoConfig-Editor.ps1`.
 3. Close Counter-Strike 2.
 4. Right-click `CS2-VideoConfig-Editor.ps1` and select **Run with PowerShell**.
 5. Choose a Steam account and resolution, then select **Apply changes**.
@@ -57,7 +58,7 @@ You can also launch it from a PowerShell prompt:
 If Windows blocked the downloaded file, right-click the ZIP before extracting it, open **Properties**, select **Unblock**, and apply the change. Alternatively:
 
 ```powershell
-Unblock-File .\CS2-VideoConfig-Editor.ps1
+Get-ChildItem . -Recurse -File | Unblock-File
 ```
 
 ## How account discovery works
@@ -115,6 +116,19 @@ List discovered Steam accounts:
 .\CS2-VideoConfig-Editor.ps1 -ListAccounts
 ```
 
+Export a privacy-safe diagnostic report without changing the configuration or
+graphical-interface preferences:
+
+```powershell
+.\CS2-VideoConfig-Editor.ps1 `
+  -ExportDiagnostics .\cs2-diagnostics.json
+```
+
+The report contains runtime and validation status, anonymized paths, aggregate
+account discovery results, and at most 20 structured operation records. It does
+not contain PersonaName, AccountName, Account ID, SteamID64, raw configuration
+text, environment dumps, hashes, or stack traces.
+
 ### Parameters
 
 | Parameter | Description |
@@ -125,8 +139,9 @@ List discovered Steam accounts:
 | `-AspectRatioMode <value>` | Use `4:3`, `16:9`, `16:10`, or the corresponding modes `0`, `1`, `2`. |
 | `-Console` | Open the interactive console instead of the graphical editor. |
 | `-ListAccounts` | Print locally discovered accounts and configuration paths. |
+| `-ExportDiagnostics <path>` | Write an anonymized JSON diagnostic report and exit without modifying application data. |
 | `-NoBackup` | Apply the change without retaining a timestamped backup. |
-| `-Silent` | Suppress informational output. Requires `-Preset`. |
+| `-Silent` | Suppress informational output in preset, account-listing, or diagnostic-export modes. |
 
 ## Safety and recovery
 
@@ -165,25 +180,34 @@ No installation, administrator rights, Steam Web API key, or third-party PowerSh
 
 ## Development and testing
 
-The runtime remains a single PowerShell script. Tests use Pester 5.8.0 only during development and CI:
+The v2 runtime uses a small launcher plus focused modules for video configuration,
+Steam discovery, preferences, and diagnostics. Keep the packaged directory
+structure intact. Tests use Pester 5.8.0 only during development and CI:
 
 ```powershell
 Invoke-Pester .\tests
+.\build\Invoke-GuiRegression.ps1
+.\build\Invoke-PackagedAppE2E.ps1
 ```
 
 Build the deterministic ZIP and checksum locally with:
 
 ```powershell
-.\build\Build-Release.ps1 -Version 1.2.0
+.\build\Build-Release.ps1 -Version 2.0.0
 ```
 
-Pushing a matching `v*` tag runs both supported PowerShell test environments before the release workflow publishes the verified assets. CI actions are pinned to immutable commits and the workflow compares two independent builds before uploading its candidate artifacts.
+The canonical builder produces byte-identical archives in Windows PowerShell 5.1
+and PowerShell 7, verifies every manifest entry against the repository, and runs
+the extracted launcher. Optional Authenticode signing is documented in
+[`build/AUTHENTICODE.md`](build/AUTHENTICODE.md).
+
+Pushing a matching `v*` tag runs both supported PowerShell test environments before the release workflow publishes the verified assets. CI actions are pinned to immutable commits and compare independent Windows PowerShell and PowerShell 7 builds before uploading the candidate artifacts.
 
 See the [release checklist](RELEASE_CHECKLIST.md) before creating a version tag.
 
 ## Roadmap
 
-See the [project roadmap](ROADMAP.md) for the completed v1.2 milestone and planned v2 modularization.
+See the [project roadmap](ROADMAP.md) for completed milestones and future candidates.
 
 ## Releases
 

@@ -22,12 +22,17 @@
     Suppress informational output. Requires -Preset.
 .PARAMETER ListAccounts
     Lists locally discovered Steam accounts and their CS2 configuration paths.
+.PARAMETER ExportDiagnostics
+    Writes a privacy-safe JSON diagnostic report and exits without changing any
+    CS2 configuration or graphical-interface preferences.
 .EXAMPLE
     .\CS2-VideoConfig-Editor.ps1
 .EXAMPLE
     .\CS2-VideoConfig-Editor.ps1 -Console
 .EXAMPLE
     .\CS2-VideoConfig-Editor.ps1 -Preset 1920x1080 -Silent
+.EXAMPLE
+    .\CS2-VideoConfig-Editor.ps1 -ExportDiagnostics .\cs2-diagnostics.json
 #>
 [CmdletBinding()]
 param(
@@ -56,571 +61,33 @@ param(
     [switch]$Silent,
 
     [Parameter()]
-    [switch]$ListAccounts
+    [switch]$ListAccounts,
+
+    [Parameter()]
+    [ValidateNotNullOrEmpty()]
+    [string]$ExportDiagnostics
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ApplicationVersion = '1.2.0'
+$script:ApplicationVersion = '2.0.0'
 $script:SelectedConfigPath = $null
-$script:SteamId64Base = [uint64]76561197960265728
-$script:Cs2ConfigRelativePath = '730\local\cfg\cs2_video.txt'
-$script:PreferenceSchemaVersion = 1
-$script:BackupRetentionCount = 5
-$script:VideoConfigFields = [ordered]@{
-    Width = 'setting.defaultres'
-    Height = 'setting.defaultresheight'
-    Mode = 'setting.aspectratiomode'
+$script:ModuleRoot = Join-Path $PSScriptRoot 'modules'
+foreach ($moduleName in @(
+    'Cs2.VideoConfig.psm1',
+    'Cs2.Steam.psm1',
+    'Cs2.Preferences.psm1',
+    'Cs2.Diagnostics.psm1'
+)) {
+    $modulePath = Join-Path $script:ModuleRoot $moduleName
+    if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
+        throw "Required application module was not found: $modulePath"
+    }
+    Import-Module $modulePath -Force -DisableNameChecking -ErrorAction Stop
 }
-
-$script:Resolutions = @(
-    [pscustomobject]@{ Width = 1024; Height = 768;  Ratio = '4:3';   Mode = '0' }
-    [pscustomobject]@{ Width = 1152; Height = 864;  Ratio = '4:3';   Mode = '0' }
-    [pscustomobject]@{ Width = 1280; Height = 960;  Ratio = '4:3';   Mode = '0' }
-    [pscustomobject]@{ Width = 1440; Height = 1080; Ratio = '4:3';   Mode = '0' }
-    [pscustomobject]@{ Width = 1280; Height = 1024; Ratio = '5:4';   Mode = '0' }
-    [pscustomobject]@{ Width = 1280; Height = 720;  Ratio = '16:9';  Mode = '1' }
-    [pscustomobject]@{ Width = 1600; Height = 900;  Ratio = '16:9';  Mode = '1' }
-    [pscustomobject]@{ Width = 1920; Height = 1080; Ratio = '16:9';  Mode = '1' }
-    [pscustomobject]@{ Width = 2560; Height = 1440; Ratio = '16:9';  Mode = '1' }
-    [pscustomobject]@{ Width = 3840; Height = 2160; Ratio = '16:9';  Mode = '1' }
-    [pscustomobject]@{ Width = 1440; Height = 900;  Ratio = '16:10'; Mode = '2' }
-    [pscustomobject]@{ Width = 1680; Height = 1050; Ratio = '16:10'; Mode = '2' }
-    [pscustomobject]@{ Width = 1920; Height = 1200; Ratio = '16:10'; Mode = '2' }
-)
-
+$script:Resolutions = @(Get-Cs2ResolutionPresets)
 function Write-Info {
     param([string]$Message, [ConsoleColor]$Color = 'Gray')
     if (-not $Silent) { Write-Host $Message -ForegroundColor $Color }
-}
-
-function ConvertTo-SteamId64 {
-    param([uint32]$AccountId)
-    ([uint64]$AccountId + $script:SteamId64Base).ToString()
-}
-
-function Format-SteamAccountDetails {
-    param([psobject]$Account)
-    if ($null -eq $Account -or [string]::IsNullOrWhiteSpace([string]$Account.AccountId)) {
-        return [string]$Account.PersonaName
-    }
-    "$($Account.PersonaName) | $(Format-SteamAccountIdentifiers $Account)"
-}
-
-function Format-SteamAccountIdentifiers {
-    param([psobject]$Account)
-    if ($null -eq $Account -or [string]::IsNullOrWhiteSpace([string]$Account.AccountId)) {
-        if ($Account -and $Account.ConfigPath) { return [string]$Account.ConfigPath }
-        return 'Configuration selected manually'
-    }
-    "Account ID $($Account.AccountId) | SteamID64 $($Account.SteamId64)"
-}
-
-function New-CustomSteamAccount {
-    param([string]$Path)
-    [pscustomobject]@{
-        DisplayName = 'Custom configuration file'
-        AccountId = $null
-        SteamId64 = $null
-        PersonaName = 'Custom file'
-        AccountName = $null
-        MostRecent = $false
-        ConfigPath = $Path
-        HasConfig = (Test-Path -LiteralPath $Path -PathType Leaf)
-        LastWriteTime = [datetime]::MinValue
-    }
-}
-
-function Merge-Cs2AccountChoices {
-    param([object[]]$Accounts, [string[]]$RecentConfigPaths)
-    $combined = New-Object System.Collections.Generic.List[object]
-    $knownPaths = @{}
-    foreach ($account in @($Accounts)) {
-        [void]$combined.Add($account)
-        if (-not [string]::IsNullOrWhiteSpace([string]$account.ConfigPath)) {
-            $knownPaths[[IO.Path]::GetFullPath($account.ConfigPath).ToUpperInvariant()] = $true
-        }
-    }
-    foreach ($recentPath in @($RecentConfigPaths)) {
-        if ([string]::IsNullOrWhiteSpace([string]$recentPath)) { continue }
-        $fullPath = [IO.Path]::GetFullPath($recentPath)
-        $key = $fullPath.ToUpperInvariant()
-        if (-not $knownPaths.ContainsKey($key)) {
-            [void]$combined.Add((New-CustomSteamAccount $fullPath))
-            $knownPaths[$key] = $true
-        }
-    }
-    @($combined | ForEach-Object { $_ })
-}
-
-function Get-Cs2SettingsPath {
-    $basePath = [Environment]::GetFolderPath('LocalApplicationData')
-    if ([string]::IsNullOrWhiteSpace($basePath)) { throw 'LocalAppData is unavailable.' }
-    Join-Path $basePath 'Softhe\CS2-VideoConfig-Editor\settings.json'
-}
-
-function New-Cs2Preferences {
-    [pscustomobject]@{
-        SchemaVersion = $script:PreferenceSchemaVersion
-        LastAccountId = $null
-        RecentConfigPaths = @()
-        Warning = $null
-    }
-}
-
-function Read-Cs2Preferences {
-    param([string]$Path = (Get-Cs2SettingsPath))
-    $preferences = New-Cs2Preferences
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $preferences }
-    try {
-        $data = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-        if ([int]$data.SchemaVersion -ne $script:PreferenceSchemaVersion) {
-            throw "Unsupported preference schema '$($data.SchemaVersion)'."
-        }
-        if ($data.LastAccountId) { $preferences.LastAccountId = [string]$data.LastAccountId }
-        $seen = @{}
-        $recentPaths = New-Object System.Collections.Generic.List[string]
-        foreach ($candidate in @($data.RecentConfigPaths)) {
-            if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
-            $fullPath = [IO.Path]::GetFullPath([string]$candidate)
-            $key = $fullPath.ToUpperInvariant()
-            if ($seen.ContainsKey($key) -or -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { continue }
-            try { [void](Get-CurrentConfig $fullPath) } catch { continue }
-            $seen[$key] = $true
-            [void]$recentPaths.Add($fullPath)
-            if ($recentPaths.Count -ge 5) { break }
-        }
-        $preferences.RecentConfigPaths = @($recentPaths)
-    } catch {
-        $preferences.Warning = "Preferences could not be loaded: $($_.Exception.Message)"
-    }
-    $preferences
-}
-
-function Save-Cs2Preferences {
-    param(
-        [string]$LastAccountId,
-        [string[]]$RecentConfigPaths,
-        [string]$Path = (Get-Cs2SettingsPath)
-    )
-    $directory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
-    [void][IO.Directory]::CreateDirectory($directory)
-    $seen = @{}
-    $cleanPaths = New-Object System.Collections.Generic.List[string]
-    foreach ($candidate in @($RecentConfigPaths)) {
-        if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
-        $fullPath = [IO.Path]::GetFullPath([string]$candidate)
-        $key = $fullPath.ToUpperInvariant()
-        if ($seen.ContainsKey($key) -or -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { continue }
-        try { [void](Get-CurrentConfig $fullPath) } catch { continue }
-        $seen[$key] = $true
-        [void]$cleanPaths.Add($fullPath)
-        if ($cleanPaths.Count -ge 5) { break }
-    }
-    $payload = [ordered]@{
-        SchemaVersion = $script:PreferenceSchemaVersion
-        LastAccountId = if ([string]::IsNullOrWhiteSpace($LastAccountId)) { $null } else { $LastAccountId }
-        RecentConfigPaths = @($cleanPaths)
-    }
-    $json = $payload | ConvertTo-Json -Depth 3
-    $tempPath = Join-Path $directory ('.settings-' + [guid]::NewGuid().ToString('N') + '.tmp')
-    try {
-        [IO.File]::WriteAllText($tempPath, $json, (New-Object Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            $replaceBackup = "$tempPath.replace"
-            try { [IO.File]::Replace($tempPath, [IO.Path]::GetFullPath($Path), $replaceBackup) }
-            finally { if (Test-Path -LiteralPath $replaceBackup) { Remove-Item -LiteralPath $replaceBackup -Force -ErrorAction SilentlyContinue } }
-        } else {
-            [IO.File]::Move($tempPath, [IO.Path]::GetFullPath($Path))
-        }
-    } finally {
-        if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
-    }
-    [pscustomobject]@{
-        SchemaVersion = $script:PreferenceSchemaVersion
-        LastAccountId = $payload.LastAccountId
-        RecentConfigPaths = @($cleanPaths)
-    }
-}
-
-function Add-Cs2RecentConfigPath {
-    param([string[]]$Paths, [string]$Path)
-    $ordered = @($Path) + @($Paths)
-    $seen = @{}
-    $result = New-Object System.Collections.Generic.List[string]
-    foreach ($candidate in $ordered) {
-        if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
-        $fullPath = [IO.Path]::GetFullPath([string]$candidate)
-        $key = $fullPath.ToUpperInvariant()
-        if ($seen.ContainsKey($key)) { continue }
-        $seen[$key] = $true
-        [void]$result.Add($fullPath)
-        if ($result.Count -ge 5) { break }
-    }
-    @($result)
-}
-
-function ConvertTo-AspectMode {
-    param([string]$Value)
-    switch ($Value) {
-        { $_ -in '0', '4:3', '5:4' } { return '0' }
-        { $_ -in '1', '16:9' }       { return '1' }
-        { $_ -in '2', '16:10' }      { return '2' }
-        default                      { return $null }
-    }
-}
-
-function ConvertFrom-AspectMode {
-    param([string]$Value)
-    switch ($Value) { '0' { '4:3 / 5:4' } '1' { '16:9' } '2' { '16:10' } default { 'Unknown' } }
-}
-
-function Get-AutomaticAspectMode {
-    param([int]$Width, [int]$Height)
-    $ratio = $Width / [double]$Height
-    if ([math]::Abs($ratio - (4 / 3.0)) -lt 0.01 -or [math]::Abs($ratio - (5 / 4.0)) -lt 0.01) { return '0' }
-    if ([math]::Abs($ratio - (16 / 9.0)) -lt 0.01) { return '1' }
-    if ([math]::Abs($ratio - (16 / 10.0)) -lt 0.01) { return '2' }
-    return $null
-}
-
-function New-Resolution {
-    param([int]$Width, [int]$Height, [AllowNull()][string]$Mode)
-    $normalizedMode = if ([string]::IsNullOrEmpty($Mode)) { $null } else { $Mode }
-    [pscustomobject]@{ Width = $Width; Height = $Height; Mode = $normalizedMode; Display = "${Width}x${Height}" }
-}
-
-function Resolve-Resolution {
-    param([string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
-    $Value = $Value.Trim()
-    if ($Value -match '^\d+$') {
-        $index = [int]$Value
-        if ($index -ge 1 -and $index -le $script:Resolutions.Count) {
-            $item = $script:Resolutions[$index - 1]
-            return New-Resolution $item.Width $item.Height $item.Mode
-        }
-        return $null
-    }
-    if ($Value -notmatch '^(?<width>\d+)\s*[xX]\s*(?<height>\d+)$') { return $null }
-    $width = [int]$Matches.width
-    $height = [int]$Matches.height
-    if ($width -lt 320 -or $height -lt 200 -or $width -gt 32768 -or $height -gt 32768) { return $null }
-    $known = $script:Resolutions | Where-Object { $_.Width -eq $width -and $_.Height -eq $height } | Select-Object -First 1
-    $mode = if ($null -ne $known) { $known.Mode } else { Get-AutomaticAspectMode $width $height }
-    New-Resolution $width $height $mode
-}
-
-function Resolve-SelectedResolution {
-    param(
-        [string]$Selection,
-        [int]$CustomWidth,
-        [int]$CustomHeight,
-        [string]$Mode
-    )
-    if ($Selection -eq 'Custom...') {
-        return New-Resolution $CustomWidth $CustomHeight $Mode
-    }
-
-    $resolution = Resolve-Resolution $Selection
-    if ($null -eq $resolution) { throw "Invalid resolution selection '$Selection'." }
-    $resolution.Mode = $Mode
-    $resolution
-}
-
-function Get-SteamRoots {
-    param([string]$Override = $SteamRoot)
-    if ($Override) {
-        if (-not (Test-Path -LiteralPath $Override -PathType Container)) { throw "Steam folder not found: $Override" }
-        return [IO.Path]::GetFullPath($Override)
-    }
-    $candidates = New-Object System.Collections.Generic.List[string]
-    foreach ($registryPath in @('HKCU:\Software\Valve\Steam', 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam')) {
-        try {
-            $properties = Get-ItemProperty -LiteralPath $registryPath -ErrorAction Stop
-            foreach ($name in @('SteamPath', 'InstallPath')) {
-                if ($properties.$name) { [void]$candidates.Add([string]$properties.$name) }
-            }
-        } catch { }
-    }
-    if (${env:ProgramFiles(x86)}) { [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Steam')) }
-    $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique
-}
-
-function Get-VdfField {
-    param([string]$Text, [string]$Name)
-    $match = [regex]::Match($Text, '(?m)^[\t ]*"' + [regex]::Escape($Name) + '"[\t ]*"(?<value>(?:\\.|[^"\\])*)"[\t ]*\r?$')
-    if ($match.Success) { return $match.Groups['value'].Value -replace '\\"', '"' -replace '\\\\', '\' }
-    return $null
-}
-
-function Get-SteamLoginUsers {
-    param([string]$SteamRoot)
-    $path = Join-Path $SteamRoot 'config\loginusers.vdf'
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
-    $text = Get-Content -LiteralPath $path -Raw
-    $pattern = '(?ms)^[\t ]*"(?<steamId>\d{17})"[\t ]*\r?\n[\t ]*\{(?<body>.*?)^[\t ]*\}'
-    foreach ($match in [regex]::Matches($text, $pattern)) {
-        $body = $match.Groups['body'].Value
-        [pscustomobject]@{
-            SteamId64 = $match.Groups['steamId'].Value
-            AccountName = Get-VdfField $body 'AccountName'
-            PersonaName = Get-VdfField $body 'PersonaName'
-            MostRecent = (Get-VdfField $body 'MostRecent') -eq '1'
-        }
-    }
-}
-
-function Get-SteamAccounts {
-    param([string[]]$Roots = @(Get-SteamRoots))
-    $accounts = foreach ($root in $Roots) {
-        $loginUsers = @{}
-        foreach ($user in Get-SteamLoginUsers $root) { $loginUsers[[string]$user.SteamId64] = $user }
-        $userdata = Join-Path $root 'userdata'
-        if (-not (Test-Path -LiteralPath $userdata -PathType Container)) { continue }
-
-        foreach ($directory in Get-ChildItem -LiteralPath $userdata -Directory -ErrorAction SilentlyContinue) {
-            $accountId = [uint32]0
-            if (-not [uint32]::TryParse($directory.Name, [ref]$accountId)) { continue }
-            $steamId64 = ConvertTo-SteamId64 $accountId
-            $login = $loginUsers[[string]$steamId64]
-            $configPath = Join-Path $directory.FullName $script:Cs2ConfigRelativePath
-            $hasConfig = Test-Path -LiteralPath $configPath -PathType Leaf
-            $personaName = if ($login -and $login.PersonaName) { $login.PersonaName } else { "Steam account $accountId" }
-            $displayName = "$personaName  -  Account ID $accountId  -  SteamID64 $steamId64"
-            if (-not $hasConfig) { $displayName += '  (CS2 config not found)' }
-            [pscustomobject]@{
-                DisplayName = $displayName
-                AccountId = [string]$accountId
-                SteamId64 = $steamId64
-                PersonaName = $personaName
-                AccountName = if ($login) { $login.AccountName } else { $null }
-                MostRecent = [bool]($login -and $login.MostRecent)
-                ConfigPath = $configPath
-                HasConfig = $hasConfig
-                LastWriteTime = if ($hasConfig) { (Get-Item -LiteralPath $configPath).LastWriteTime } else { [datetime]::MinValue }
-            }
-        }
-    }
-    $uniqueAccounts = @{}
-    foreach ($account in $accounts) { $uniqueAccounts[$account.ConfigPath] = $account }
-    @($uniqueAccounts.Values | Sort-Object @{ Expression = 'MostRecent'; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true }, PersonaName)
-}
-
-function Get-TextFileInfo {
-    param([string]$Path)
-    $bytes = [IO.File]::ReadAllBytes($Path)
-    $encoding = New-Object Text.UTF8Encoding($false, $true)
-    $offset = 0
-    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-        $encoding = New-Object Text.UTF8Encoding($true); $offset = 3
-    } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
-        $encoding = New-Object Text.UnicodeEncoding($false, $true); $offset = 2
-    } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
-        $encoding = New-Object Text.UnicodeEncoding($true, $true); $offset = 2
-    }
-    try {
-        $text = $encoding.GetString($bytes, $offset, $bytes.Length - $offset)
-    } catch [Text.DecoderFallbackException] {
-        # Old Steam files may use the current Windows ANSI code page.
-        $encoding = [Text.Encoding]::Default
-        $text = $encoding.GetString($bytes, $offset, $bytes.Length - $offset)
-    }
-    [pscustomobject]@{
-        Text = $text
-        Encoding = $encoding
-    }
-}
-
-function Get-ConfigValue {
-    param([string]$Text, [string]$Key)
-    $pattern = '(?m)^[\t ]*"' + [regex]::Escape($Key) + '"[\t ]*"(?<value>[^"\r\n]*)"[\t ]*\r?$'
-    $matches = [regex]::Matches($Text, $pattern)
-    if ($matches.Count -ne 1) { throw "Expected exactly one '$Key' entry; found $($matches.Count)." }
-    $matches[0].Groups['value'].Value
-}
-
-function Get-CurrentConfig {
-    param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Configuration file not found: $Path" }
-    $file = Get-TextFileInfo $Path
-    [pscustomobject]@{
-        Width = [int](Get-ConfigValue $file.Text $script:VideoConfigFields.Width)
-        Height = [int](Get-ConfigValue $file.Text $script:VideoConfigFields.Height)
-        Mode = Get-ConfigValue $file.Text $script:VideoConfigFields.Mode
-    }
-}
-
-function Set-ConfigValue {
-    param([string]$Text, [string]$Key, [string]$Value)
-    $pattern = '(?m)^(?<prefix>[\t ]*"' + [regex]::Escape($Key) + '"[\t ]*)"[^"\r\n]*"(?<suffix>[\t ]*)\r?$'
-    $matches = [regex]::Matches($Text, $pattern)
-    if ($matches.Count -ne 1) { throw "Expected exactly one '$Key' entry; found $($matches.Count). No file was written." }
-    [regex]::Replace(
-        $Text,
-        $pattern,
-        { param($match) $match.Groups['prefix'].Value + '"' + $Value + '"' + $match.Groups['suffix'].Value + $(if ($match.Value.EndsWith("`r")) { "`r" } else { '' }) },
-        1
-    )
-}
-
-function New-Cs2BackupPath {
-    param([string]$Path)
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $candidate = "$Path.$stamp.bak"
-    $suffix = 1
-    while (Test-Path -LiteralPath $candidate) {
-        $candidate = "$Path.$stamp-$suffix.bak"
-        $suffix++
-    }
-    $candidate
-}
-
-function Get-Cs2BackupFiles {
-    param([string]$Path)
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    $directory = [IO.Path]::GetDirectoryName($fullPath)
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { return @() }
-    $fileName = [IO.Path]::GetFileName($fullPath)
-    $pattern = '^' + [regex]::Escape($fileName) + '\.(?<stamp>\d{8}-\d{6})(?:-(?<suffix>\d+))?\.bak$'
-    $backups = foreach ($file in Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue) {
-        $match = [regex]::Match($file.Name, $pattern)
-        if (-not $match.Success) { continue }
-        $stamp = [datetime]::MinValue
-        [void][datetime]::TryParseExact(
-            $match.Groups['stamp'].Value,
-            'yyyyMMdd-HHmmss',
-            [Globalization.CultureInfo]::InvariantCulture,
-            [Globalization.DateTimeStyles]::None,
-            [ref]$stamp
-        )
-        $config = $null
-        $errorText = $null
-        try { $config = Get-CurrentConfig $file.FullName } catch { $errorText = $_.Exception.Message }
-        [pscustomobject]@{
-            Path = $file.FullName
-            Name = $file.Name
-            Timestamp = $stamp
-            Suffix = if ($match.Groups['suffix'].Success) { [int]$match.Groups['suffix'].Value } else { 0 }
-            LastWriteTime = $file.LastWriteTime
-            Config = $config
-            Valid = $null -ne $config
-            Error = $errorText
-        }
-    }
-    @($backups | Sort-Object @{ Expression = 'Timestamp'; Descending = $true }, @{ Expression = 'Suffix'; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true })
-}
-
-function Remove-Cs2OldBackups {
-    param([string]$Path, [int]$Keep = $script:BackupRetentionCount)
-    if ($Keep -lt 1) { throw 'Backup retention must keep at least one file.' }
-    $removed = New-Object System.Collections.Generic.List[string]
-    $backups = @(Get-Cs2BackupFiles $Path)
-    foreach ($backup in $backups | Select-Object -Skip $Keep) {
-        Remove-Item -LiteralPath $backup.Path -Force
-        [void]$removed.Add($backup.Path)
-    }
-    @($removed)
-}
-
-function Invoke-Cs2BackupRetention {
-    param([string]$Path, [int]$Keep = $script:BackupRetentionCount)
-    try {
-        [pscustomobject]@{
-            RemovedBackups = @(Remove-Cs2OldBackups $Path $Keep)
-            Warning = $null
-        }
-    } catch {
-        [pscustomobject]@{
-            RemovedBackups = @()
-            Warning = "Backup retention could not be completed: $($_.Exception.Message)"
-        }
-    }
-}
-
-function Test-Cs2ConfigEquals {
-    param($Left, $Right)
-    $null -ne $Left -and $null -ne $Right -and
-        $Left.Width -eq $Right.Width -and
-        $Left.Height -eq $Right.Height -and
-        [string]$Left.Mode -eq [string]$Right.Mode
-}
-
-function Restore-Cs2Backup {
-    param([string]$Path, [string]$BackupPath)
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    $fullBackupPath = [IO.Path]::GetFullPath($BackupPath)
-    $knownBackup = @(Get-Cs2BackupFiles $fullPath | Where-Object Path -eq $fullBackupPath | Select-Object -First 1)
-    if ($knownBackup.Count -ne 1) { throw 'The selected file is not an editor-created backup for this configuration.' }
-    if (-not $knownBackup[0].Valid) { throw "The selected backup is invalid: $($knownBackup[0].Error)" }
-    $current = Get-CurrentConfig $fullPath
-    if (Test-Cs2ConfigEquals $current $knownBackup[0].Config) {
-        return [pscustomobject]@{ Changed = $false; BackupPath = $null; RestoredConfig = $current; RemovedBackups = @(); RetentionWarning = $null }
-    }
-    $rollbackPath = New-Cs2BackupPath $fullPath
-    $tempPath = Join-Path ([IO.Path]::GetDirectoryName($fullPath)) ('.cs2-video-' + [guid]::NewGuid().ToString('N') + '.tmp')
-    try {
-        [IO.File]::Copy($fullBackupPath, $tempPath, $false)
-        [void](Get-CurrentConfig $tempPath)
-        [IO.File]::Replace($tempPath, $fullPath, $rollbackPath)
-    } finally {
-        if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
-    }
-    $restored = Get-CurrentConfig $fullPath
-    if (-not (Test-Cs2ConfigEquals $restored $knownBackup[0].Config)) {
-        throw 'The restored configuration did not match the selected backup.'
-    }
-    $retention = Invoke-Cs2BackupRetention $fullPath
-    [pscustomobject]@{
-        Changed = $true
-        BackupPath = $rollbackPath
-        RestoredConfig = $restored
-        RemovedBackups = @($retention.RemovedBackups)
-        RetentionWarning = $retention.Warning
-    }
-}
-
-function Update-VideoConfig {
-    param(
-        [string]$Path,
-        [psobject]$Resolution,
-        [bool]$CreateBackup = $true
-    )
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Configuration file not found: $Path" }
-    $file = Get-TextFileInfo $Path
-
-    # Validate and update every required entry in memory before touching the file.
-    $updated = $file.Text
-    foreach ($property in $script:VideoConfigFields.Keys) {
-        $updated = Set-ConfigValue $updated $script:VideoConfigFields[$property] ([string]$Resolution.$property)
-    }
-    if ($updated -ceq $file.Text) {
-        return [pscustomobject]@{ Changed = $false; BackupPath = $null; RemovedBackups = @(); RetentionWarning = $null }
-    }
-
-    $replaceBackupPath = New-Cs2BackupPath $Path
-    $backupPath = if ($CreateBackup) { $replaceBackupPath } else { $null }
-
-    $tempPath = Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))) ('.cs2-video-' + [guid]::NewGuid().ToString('N') + '.tmp')
-    try {
-        [IO.File]::WriteAllText($tempPath, $updated, $file.Encoding)
-        # File.Replace requires a backup path on Windows PowerShell 5.1. Create
-        # one for the atomic swap and remove it when the user opted out.
-        [IO.File]::Replace($tempPath, [IO.Path]::GetFullPath($Path), $replaceBackupPath)
-        if (-not $CreateBackup) { Remove-Item -LiteralPath $replaceBackupPath -Force }
-    } finally {
-        if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
-    }
-    $retention = if ($CreateBackup) {
-        Invoke-Cs2BackupRetention $Path
-    } else {
-        [pscustomobject]@{ RemovedBackups = @(); Warning = $null }
-    }
-    [pscustomobject]@{
-        Changed = $true
-        BackupPath = $backupPath
-        RemovedBackups = @($retention.RemovedBackups)
-        RetentionWarning = $retention.Warning
-    }
 }
 
 function Read-AspectMode {
@@ -1721,7 +1188,12 @@ function Show-ModernGraphicalEditor {
 function Invoke-Cs2VideoConfigEditor {
     param([hashtable]$BoundParameters)
     try {
-        if ($Silent -and -not $Preset -and -not $ListAccounts) { throw '-Silent requires -Preset because interactive interfaces cannot be silent.' }
+        if ($Silent -and -not $Preset -and -not $ListAccounts -and -not $ExportDiagnostics) {
+            throw '-Silent requires -Preset, -ListAccounts, or -ExportDiagnostics because interactive interfaces cannot be silent.'
+        }
+        if ($ExportDiagnostics -and ($Preset -or $Console -or $ListAccounts)) {
+            throw '-ExportDiagnostics cannot be combined with -Preset, -Console, or -ListAccounts.'
+        }
         $steamRoots = @(Get-SteamRoots $SteamRoot)
         $steamAccounts = Get-SteamAccounts -Roots $steamRoots
         $discoveredPaths = @($steamAccounts | Where-Object HasConfig | Select-Object -ExpandProperty ConfigPath)
@@ -1732,7 +1204,16 @@ function Invoke-Cs2VideoConfigEditor {
         if ($BoundParameters.ContainsKey('FilePath')) { $script:SelectedConfigPath = [IO.Path]::GetFullPath($FilePath) }
         elseif ($discoveredPaths.Count -gt 0) { $script:SelectedConfigPath = $discoveredPaths[0] }
 
-        if ($Preset) {
+        if ($ExportDiagnostics) {
+            $diagnosticPath = Export-Cs2Diagnostics `
+                -Path $ExportDiagnostics `
+                -ApplicationVersion $script:ApplicationVersion `
+                -SteamRoots $steamRoots `
+                -Accounts $steamAccounts `
+                -SelectedPath $script:SelectedConfigPath
+            if (-not $Silent) { Write-Output "Diagnostic report: $diagnosticPath" }
+            exit 0
+        } elseif ($Preset) {
             if (-not $script:SelectedConfigPath) { throw 'No CS2 configuration was found. Specify -FilePath.' }
             $resolution = Resolve-Resolution $Preset
             if ($null -eq $resolution) { throw "Invalid preset '$Preset'. Use WIDTHxHEIGHT or a predefined menu number." }
@@ -1782,7 +1263,7 @@ function Invoke-Cs2VideoConfigEditor {
         } else { Write-Info 'The selected settings are already active.' DarkGray }
         exit 0
     } catch {
-        if (-not $Preset -and -not $Console) {
+        if (-not $Preset -and -not $Console -and -not $ListAccounts -and -not $ExportDiagnostics) {
             try {
                 Add-Type -AssemblyName System.Windows.Forms
                 [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'CS2 Video Configuration', 'OK', 'Error')

@@ -1,17 +1,18 @@
-# CS2 Video Config Editor v1.2.0
+# CS2 Video Config Editor v2.0.0
 
-Version 1.2.0 makes configuration changes easier to review and recover.
+Version 2.0.0 strengthens maintainability, support diagnostics, accessibility
+coverage, and release verification while preserving the existing graphical,
+console, and preset workflows.
 
 ## Highlights
 
-- Responsive Windows 11-style dark interface with current and pending settings.
-- Backup history with preview, guarded restore, and automatic rollback backups.
-- Refreshable Steam accounts and locally remembered recent configuration files.
-- More reliable PersonaName discovery for standard Steam `loginusers.vdf` files.
-- Correct keyboard navigation through custom dimensions and Reset.
-- Explicit Steam-root preservation when accounts are refreshed.
-- Nonfatal inline warnings when old backups cannot be pruned.
-- Automated Windows PowerShell 5.1 and PowerShell 7 tests.
-- Deterministic ZIP packaging with a SHA-256 checksum.
+- Focused modules for video configuration, Steam discovery, preferences, and diagnostics.
+- Privacy-safe `-ExportDiagnostics` JSON reports with anonymized paths and Steam identifiers.
+- Automated WinForms regression checks for responsive layouts, DPI scaling, High Contrast, keyboard navigation, and accessibility contracts.
+- Canonical manifest-driven ZIP generation with byte-identical Windows PowerShell 5.1 and PowerShell 7 output.
+- Exact verification of every packaged runtime file plus an extracted-package launcher smoke test.
+- Optional Authenticode signing helpers and CI enforcement for configured release certificates.
+- Continued atomic configuration updates, backup restore, retention, and encoding preservation.
 
-The runtime remains a single dependency-free PowerShell script. Existing command-line parameters are unchanged.
+The v2 ZIP contains the launcher and a `modules` directory. Extract and keep the
+complete directory structure together when running the editor.
