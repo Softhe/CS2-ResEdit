@@ -10,6 +10,7 @@ All notable changes to CS2 Video Config Editor are documented here.
 - Replaced runtime-dependent ZIP output with a canonical manifest-driven builder that is byte-identical in Windows PowerShell 5.1 and PowerShell 7.
 - Added exact package-entry verification and a fresh-process smoke test of the extracted release.
 - Added optional Authenticode signing tools and release signature enforcement.
+- Fixed rounded card repainting so repeated window resizing no longer leaves stale horizontal border artifacts.
 
 ## 1.2.0 - 2026-07-26
 

@@ -12,6 +12,7 @@ console, and preset workflows.
 - Canonical manifest-driven ZIP generation with byte-identical Windows PowerShell 5.1 and PowerShell 7 output.
 - Exact verification of every packaged runtime file plus an extracted-package launcher smoke test.
 - Optional Authenticode signing helpers and CI enforcement for configured release certificates.
+- Correct rounded-card repainting during repeated window resizing.
 - Continued atomic configuration updates, backup restore, retention, and encoding preservation.
 
 The v2 ZIP contains the launcher and a `modules` directory. Extract and keep the

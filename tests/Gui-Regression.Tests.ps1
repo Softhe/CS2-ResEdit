@@ -143,6 +143,29 @@ Describe 'GUI responsive layout regression' -Tag 'GuiRegression' {
             $form.Dispose()
         }
     }
+
+    It 'fully repaints rounded cards after repeated height changes' {
+        $theme = Get-Cs2UiTheme $false
+        $parent = New-Object Windows.Forms.Panel
+        $card = New-Cs2UiCard $theme
+        try {
+            $parent.Controls.Add($card)
+            foreach ($height in @(480, 300, 520, 260, 500)) {
+                $card.Size = New-Object Drawing.Size(640, $height)
+                Set-Cs2UiRoundedRegion $card 12
+            }
+
+            $flags = [Reflection.BindingFlags]'Instance, NonPublic'
+            $doubleBuffered = [Windows.Forms.Control].GetProperty('DoubleBuffered', $flags)
+            $resizeRedraw = [Windows.Forms.Control].GetProperty('ResizeRedraw', $flags)
+            $doubleBuffered.GetValue($card, $null) | Should -BeTrue
+            $resizeRedraw.GetValue($card, $null) | Should -BeTrue
+            $card.Region | Should -Not -BeNullOrEmpty
+        } finally {
+            $card.Dispose()
+            $parent.Dispose()
+        }
+    }
 }
 
 Describe 'GUI keyboard and accessibility contracts' -Tag 'GuiRegression' {

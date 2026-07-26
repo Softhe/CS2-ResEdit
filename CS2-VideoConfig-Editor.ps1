@@ -242,12 +242,24 @@ function New-Cs2UiRoundedPath {
 function Set-Cs2UiRoundedRegion {
     param($Control, [int]$Radius)
     if ($Control.Width -le 1 -or $Control.Height -le 1) { return }
+    # A resized WinForms Panel does not repaint its full surface by default.
+    # With a custom Region and border, old bottom edges otherwise remain
+    # visible as horizontal "ghost" lines after repeated resizing.
+    $nonPublicInstance = [Reflection.BindingFlags]'Instance, NonPublic'
+    foreach ($propertyName in @('DoubleBuffered', 'ResizeRedraw')) {
+        try {
+            $property = [Windows.Forms.Control].GetProperty($propertyName, $nonPublicInstance)
+            if ($property) { $property.SetValue($Control, $true, $null) }
+        } catch { }
+    }
     $bounds = New-Object Drawing.Rectangle(0, 0, $Control.Width, $Control.Height)
     $path = New-Cs2UiRoundedPath $bounds $Radius
     $oldRegion = $Control.Region
     $Control.Region = New-Object Drawing.Region($path)
     $path.Dispose()
     if ($oldRegion) { $oldRegion.Dispose() }
+    $Control.Invalidate($true)
+    if ($Control.Parent) { $Control.Parent.Invalidate($Control.Bounds, $true) }
 }
 
 function Get-Cs2PendingState {
