@@ -40,26 +40,45 @@ jobs:
         run: |
           .\build\Build-Release.ps1 -Version $env:GITHUB_REF_NAME.TrimStart('v') -OutputDirectory .\dist
 
-      - name: Verify packaged script with Windows PowerShell 5.1
+      - name: Reproduce release assets with PowerShell 7
+        shell: pwsh
+        run: |
+          ./build/Build-Release.ps1 `
+            -Version $env:GITHUB_REF_NAME.TrimStart('v') `
+            -OutputDirectory ./repeat-pwsh
+          $releaseHash = (Get-FileHash ./dist/CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
+          $repeatHash = (Get-FileHash ./repeat-pwsh/CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
+          if ($releaseHash -ne $repeatHash) {
+            throw 'Release build differs between Windows PowerShell 5.1 and PowerShell 7.'
+          }
+
+      - name: Verify packaged runtime with Windows PowerShell 5.1
         shell: powershell
+        env:
+          REQUIRE_AUTHENTICODE_SIGNATURE: ${{ vars.REQUIRE_AUTHENTICODE_SIGNATURE }}
         run: |
           Expand-Archive .\dist\CS2-VideoConfig-Editor.zip .\package-check
-          $tokens = $null
-          $errors = $null
-          [void][Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path .\package-check\CS2-VideoConfig-Editor.ps1),
-            [ref]$tokens,
-            [ref]$errors
-          )
-          if ($errors.Count) { throw ($errors -join [Environment]::NewLine) }
-          $sourceHash = (Get-FileHash .\CS2-VideoConfig-Editor.ps1 -Algorithm SHA256).Hash
-          $packageHash = (Get-FileHash .\package-check\CS2-VideoConfig-Editor.ps1 -Algorithm SHA256).Hash
-          if ($sourceHash -ne $packageHash) { throw 'Packaged source hash mismatch.' }
-          $zipHash = (Get-FileHash .\dist\CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          $checksum = (Get-Content .\dist\CS2-VideoConfig-Editor.zip.sha256 -Raw).Trim()
-          if ($checksum -ne "$zipHash  CS2-VideoConfig-Editor.zip") {
-            throw 'Packaged checksum does not match the release ZIP.'
+          Get-ChildItem .\package-check -Recurse -File |
+            Where-Object { $_.Extension -in @('.ps1', '.psm1', '.psd1') } |
+            ForEach-Object {
+              $tokens = $null
+              $errors = $null
+              [void][Management.Automation.Language.Parser]::ParseFile(
+                $_.FullName,
+                [ref]$tokens,
+                [ref]$errors
+              )
+              if ($errors.Count) { throw ($errors -join [Environment]::NewLine) }
+            }
+          . .\package-check\CS2-VideoConfig-Editor.ps1
+          if ($script:ApplicationVersion -ne $env:GITHUB_REF_NAME.TrimStart('v')) {
+            throw 'Extracted release package failed its launcher smoke test.'
           }
+          $verification = @{ ArtifactDirectory = '.\dist' }
+          if ($env:REQUIRE_AUTHENTICODE_SIGNATURE -eq 'true') {
+            $verification.RequireAuthenticodeSignature = $true
+          }
+          .\build\Test-ReleaseArtifacts.ps1 @verification
 
       - name: Publish GitHub Release
         shell: pwsh

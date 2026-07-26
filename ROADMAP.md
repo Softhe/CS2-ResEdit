@@ -11,13 +11,20 @@ Version 1.2.0 completes the reliability and recovery milestone:
 - Refreshable Steam accounts plus local last-account and recent-file preferences.
 - Deterministic ZIP/checksum generation and tag-triggered release automation.
 
-## Future v2 work
+## v2.0.0
 
-Version 2 may split account discovery, config handling, preferences, and WinForms construction into `.psm1` modules. That larger packaging change should happen only when it provides a clear maintenance benefit over the v1.2 single-script distribution.
+Version 2 completes the maintainability, diagnostics, and release-integrity milestone:
 
-Additional candidates:
+- Split video configuration, Steam discovery, preferences, and diagnostics into focused `.psm1` modules behind the compatible launcher.
+- Add a privacy-safe diagnostic export with path and Steam-identifier anonymization.
+- Add repeatable WinForms layout, DPI, High Contrast, keyboard, and accessibility regression tests.
+- Replace runtime-dependent ZIP creation with a canonical cross-PowerShell builder and manifest verification.
+- Add optional Authenticode signing tools and signature enforcement hooks for CI releases.
+- Verify extracted release packages in a fresh PowerShell process.
 
-- Optional Authenticode signing and documented certificate handling.
-- A dedicated diagnostic export with automatic path anonymization.
+## Future candidates
+
+- Surface diagnostic export directly in the graphical interface.
 - Localization-ready UI strings.
 - Additional display-mode settings after Valve's config format is verified.
+- Separate the large WinForms editor closure after its state and event contracts are stable.
