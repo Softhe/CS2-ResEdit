@@ -24,6 +24,7 @@ Version 2 completes the maintainability, diagnostics, and release-integrity mile
 
 ## Future candidates
 
+- Obtain a trusted Authenticode code-signing certificate, sign every packaged runtime file, and enable mandatory signature verification in CI.
 - Surface diagnostic export directly in the graphical interface.
 - Localization-ready UI strings.
 - Additional display-mode settings after Valve's config format is verified.

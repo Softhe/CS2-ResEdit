@@ -23,13 +23,13 @@
 
 ## Maintainer approval and publication
 
-- [ ] Review the complete uncommitted diff.
-- [ ] Approve the v2.0.0 release notes and screenshot.
-- [ ] Commit the intended release-candidate files.
-- [ ] Push the commit and confirm the Test workflow succeeds.
-- [ ] Create and push the signed or annotated `v2.0.0` tag.
-- [ ] Confirm the Release workflow publishes the ZIP and checksum.
-- [ ] Download the published assets and compare their hashes with the workflow output.
+- [x] Review the complete release-candidate diff.
+- [x] Approve the v2.0.0 release notes and screenshot.
+- [x] Commit the intended release-candidate files.
+- [x] Push the commit and confirm the Test workflow succeeds.
+- [x] Create and push the annotated `v2.0.0` tag.
+- [x] Confirm the Release workflow publishes the ZIP and checksum.
+- [x] Download and verify the published assets. The canonical release ZIP SHA-256 is `dba4374a3e52c8cdcb2482f735a5c091f4f812a72d0cf633102dba84413bacc3`.
 
 ## Optional Authenticode enforcement
 
@@ -37,3 +37,5 @@
 - [ ] Verify the signatures locally with `build/Test-ReleaseArtifacts.ps1 -RequireAuthenticodeSignature`.
 - [ ] Set the repository variable `REQUIRE_AUTHENTICODE_SIGNATURE` to `true`.
 - [ ] Confirm both Test and Release workflows reject unsigned or invalid runtime files.
+
+These items are deferred to a future hardening release after a trusted code-signing certificate is available.
