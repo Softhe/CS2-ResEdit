@@ -1,0 +1,85 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Test with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider NuGet -Scope CurrentUser -Force | Out-Null
+          Install-Module Pester -RequiredVersion 5.8.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          Import-Module Pester -RequiredVersion 5.8.0 -Force
+          $result = Invoke-Pester -Path .\tests -PassThru
+          if ($result.FailedCount -gt 0) { exit 1 }
+
+      - name: Test with PowerShell 7
+        shell: pwsh
+        run: |
+          Install-Module Pester -RequiredVersion 5.8.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          Import-Module Pester -RequiredVersion 5.8.0 -Force
+          $result = Invoke-Pester -Path ./tests -PassThru
+          if ($result.FailedCount -gt 0) { exit 1 }
+
+      - name: Parser, ASCII, and diff checks
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./CS2-VideoConfig-Editor.ps1),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count) { throw ($errors -join [Environment]::NewLine) }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path ./CS2-VideoConfig-Editor.ps1))
+          if (@($bytes | Where-Object { $_ -gt 127 }).Count) { throw 'Source is not ASCII-compatible.' }
+          git diff --check
+
+      - name: Build and verify deterministic release artifacts
+        shell: powershell
+        run: |
+          . .\CS2-VideoConfig-Editor.ps1
+          $version = $script:ApplicationVersion
+          .\build\Build-Release.ps1 -Version $version -OutputDirectory .\dist
+          .\build\Build-Release.ps1 -Version $version -OutputDirectory .\repeat
+          $firstHash = (Get-FileHash .\dist\CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
+          $repeatHash = (Get-FileHash .\repeat\CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash
+          if ($firstHash -ne $repeatHash) { throw 'Release build is not deterministic.' }
+          $checksum = (Get-Content .\dist\CS2-VideoConfig-Editor.zip.sha256 -Raw).Trim()
+          $expected = "$($firstHash.ToLowerInvariant())  CS2-VideoConfig-Editor.zip"
+          if ($checksum -ne $expected) { throw 'Release checksum does not match the ZIP.' }
+          Expand-Archive .\dist\CS2-VideoConfig-Editor.zip .\package-check
+          $sourceHash = (Get-FileHash .\CS2-VideoConfig-Editor.ps1 -Algorithm SHA256).Hash
+          $packageHash = (Get-FileHash .\package-check\CS2-VideoConfig-Editor.ps1 -Algorithm SHA256).Hash
+          if ($sourceHash -ne $packageHash) { throw 'Packaged source hash mismatch.' }
+
+      - name: Upload verified release candidate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: cs2-video-config-editor-${{ github.sha }}
+          path: |
+            dist/CS2-VideoConfig-Editor.zip
+            dist/CS2-VideoConfig-Editor.zip.sha256
+          if-no-files-found: error
+          retention-days: 7

@@ -7,6 +7,7 @@ Safely change Counter-Strike 2 resolution settings from a modern Windows interfa
 [![Latest release](https://img.shields.io/github/v/release/Softhe/CS2-VideoConfig-Editor?display_name=tag&sort=semver&style=flat-square)](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest)
 [![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white&style=flat-square)](https://learn.microsoft.com/powershell/)
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows11&logoColor=white&style=flat-square)](#requirements)
+[![Tests](https://img.shields.io/github/actions/workflow/status/Softhe/CS2-VideoConfig-Editor/test.yml?branch=main&label=tests&style=flat-square)](https://github.com/Softhe/CS2-VideoConfig-Editor/actions/workflows/test.yml)
 [![No dependencies](https://img.shields.io/badge/dependencies-none-2EA44F?style=flat-square)](#requirements)
 
 ### [Download the latest ZIP](https://github.com/Softhe/CS2-VideoConfig-Editor/releases/latest/download/CS2-VideoConfig-Editor.zip)
@@ -31,6 +32,9 @@ CS2 Video Config Editor finds the video configuration for each local Steam accou
 | **Common and custom resolutions** | Includes `4:3 / 5:4`, `16:9`, and `16:10` presets plus exact custom dimensions. |
 | **Safe file updates** | Validates required entries, preserves encoding and line endings, and replaces the file atomically. |
 | **Automatic backups** | Creates a timestamped `.bak` copy before a change unless explicitly disabled. |
+| **Backup restore** | Previews editor backups and restores one atomically while preserving the active file. |
+| **Responsive workflow** | Compares current and pending settings, supports Reset, and reflows for narrow windows. |
+| **Remembered files** | Remembers the last Steam account and up to five recent custom files locally. |
 | **Flexible operation** | Supports the graphical editor, an interactive console, and automation-friendly parameters. |
 | **Local and private** | Reads Steam account names locally; no API key, login, or online account lookup is used. |
 
@@ -41,6 +45,8 @@ CS2 Video Config Editor finds the video configuration for each local Steam accou
 3. Close Counter-Strike 2.
 4. Right-click `CS2-VideoConfig-Editor.ps1` and select **Run with PowerShell**.
 5. Choose a Steam account and resolution, then select **Apply changes**.
+
+Use **Refresh** to rescan local Steam accounts. Use **Backups...** to preview or restore a configuration previously backed up by the editor.
 
 You can also launch it from a PowerShell prompt:
 
@@ -65,6 +71,14 @@ C:\Program Files (x86)\Steam\userdata\<AccountID>\730\local\cfg\cs2_video.txt
 ```
 
 Use **Browse** or `-FilePath` when Steam or the configuration is stored elsewhere.
+
+The graphical editor remembers the last selected Steam Account ID and up to five valid custom configuration paths in:
+
+```text
+%LOCALAPPDATA%\Softhe\CS2-VideoConfig-Editor\settings.json
+```
+
+This file contains no credentials and is never uploaded. Console, preset, silent, and account-listing modes do not read or update GUI preferences.
 
 ## Command-line usage
 
@@ -119,7 +133,8 @@ List discovered Steam accounts:
 - Close CS2 before applying a change. A running game may overwrite its configuration when it exits.
 - Keep **Create a timestamped backup** enabled unless you have another recovery method.
 - Backups are written beside the original file as `cs2_video.txt.<timestamp>.bak`.
-- To restore one manually, close CS2, preserve the current file if needed, and replace `cs2_video.txt` with the selected backup.
+- Select **Backups...** to preview and restore one. Restore creates another rollback backup first.
+- The editor retains the newest five backups it created for each configuration and never prunes unrelated `.bak` files.
 
 The editor validates all required settings in memory before writing. An invalid or incomplete configuration is rejected without modifying the file.
 
@@ -148,9 +163,27 @@ The result should be `True`.
 
 No installation, administrator rights, Steam Web API key, or third-party PowerShell module is required.
 
+## Development and testing
+
+The runtime remains a single PowerShell script. Tests use Pester 5.8.0 only during development and CI:
+
+```powershell
+Invoke-Pester .\tests
+```
+
+Build the deterministic ZIP and checksum locally with:
+
+```powershell
+.\build\Build-Release.ps1 -Version 1.2.0
+```
+
+Pushing a matching `v*` tag runs both supported PowerShell test environments before the release workflow publishes the verified assets. CI actions are pinned to immutable commits and the workflow compares two independent builds before uploading its candidate artifacts.
+
+See the [release checklist](RELEASE_CHECKLIST.md) before creating a version tag.
+
 ## Roadmap
 
-See the [five-step roadmap to v2.0](ROADMAP.md) for planned work on modularization, automated testing, backup restoration, discovery improvements, and reproducible releases.
+See the [project roadmap](ROADMAP.md) for the completed v1.2 milestone and planned v2 modularization.
 
 ## Releases
 

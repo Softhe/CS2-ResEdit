@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate tag and source version
+        shell: pwsh
+        run: |
+          .\build\Test-ReleaseMetadata.ps1 `
+            -Tag $env:GITHUB_REF_NAME `
+            -RefType $env:GITHUB_REF_TYPE
+
+      - name: Build deterministic release assets
+        shell: powershell
+        run: |
+          .\build\Build-Release.ps1 -Version $env:GITHUB_REF_NAME.TrimStart('v') -OutputDirectory .\dist
+
+      - name: Verify packaged script with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Expand-Archive .\dist\CS2-VideoConfig-Editor.zip .\package-check
+          $tokens = $null
+          $errors = $null
+          [void][Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\package-check\CS2-VideoConfig-Editor.ps1),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count) { throw ($errors -join [Environment]::NewLine) }
+          $sourceHash = (Get-FileHash .\CS2-VideoConfig-Editor.ps1 -Algorithm SHA256).Hash
+          $packageHash = (Get-FileHash .\package-check\CS2-VideoConfig-Editor.ps1 -Algorithm SHA256).Hash
+          if ($sourceHash -ne $packageHash) { throw 'Packaged source hash mismatch.' }
+          $zipHash = (Get-FileHash .\dist\CS2-VideoConfig-Editor.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksum = (Get-Content .\dist\CS2-VideoConfig-Editor.zip.sha256 -Raw).Trim()
+          if ($checksum -ne "$zipHash  CS2-VideoConfig-Editor.zip") {
+            throw 'Packaged checksum does not match the release ZIP.'
+          }
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            ./dist/CS2-VideoConfig-Editor.zip `
+            ./dist/CS2-VideoConfig-Editor.zip.sha256 `
+            --title "CS2 Video Config Editor $env:GITHUB_REF_NAME" `
+            --notes-file ./RELEASE_NOTES.md `
+            --verify-tag
