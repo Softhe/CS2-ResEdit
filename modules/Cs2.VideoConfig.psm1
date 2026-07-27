@@ -18,6 +18,7 @@ $script:Resolutions = @(
     [pscustomobject]@{ Width = 3840; Height = 2160; Ratio = '16:9';  Mode = '1' }
     [pscustomobject]@{ Width = 1440; Height = 900;  Ratio = '16:10'; Mode = '2' }
     [pscustomobject]@{ Width = 1680; Height = 1050; Ratio = '16:10'; Mode = '2' }
+    [pscustomobject]@{ Width = 1728; Height = 1080; Ratio = '16:10'; Mode = '2' }
     [pscustomobject]@{ Width = 1920; Height = 1200; Ratio = '16:10'; Mode = '2' }
 )
 

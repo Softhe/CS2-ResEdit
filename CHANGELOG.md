@@ -2,6 +2,11 @@
 
 All notable changes to CS2 Video Config Editor are documented here.
 
+## 2.0.1 - 2026-07-27
+
+- Added `1728x1080` to the built-in 16:10 resolution presets.
+- Fixed packaged end-to-end fixture normalization for repositories checked out with CRLF line endings.
+
 ## 2.0.0 - 2026-07-26
 
 - Split configuration handling, Steam discovery, preferences, and diagnostics into focused PowerShell modules.
