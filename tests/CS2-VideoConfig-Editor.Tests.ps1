@@ -21,8 +21,8 @@ BeforeAll {
 }
 
 Describe 'Application metadata and import behavior' {
-    It 'exposes version 2.1.0 when dot-sourced' {
-        $script:ApplicationVersion | Should -Be '2.1.0'
+    It 'exposes version 3.0.0 when dot-sourced' {
+        $script:ApplicationVersion | Should -Be '3.0.0'
         Get-Command Invoke-Cs2VideoConfigEditor | Should -Not -BeNullOrEmpty
     }
 
@@ -410,10 +410,10 @@ Describe 'Release tooling' {
 
     It 'accepts only a tag matching the application version' {
         $metadataScript = Join-Path $PSScriptRoot '..\build\Test-ReleaseMetadata.ps1'
-        { & $metadataScript -Tag 'v9.9.9' -RefType 'tag' } | Should -Throw "*does not match source version 'v2.1.0'*"
-        { & $metadataScript -Tag 'v2.1.0' -RefType 'branch' } | Should -Throw "*requires a tag ref*"
-        $metadata = & $metadataScript -Tag 'v2.1.0' -RefType 'tag'
-        $metadata.Version | Should -Be '2.1.0'
+        { & $metadataScript -Tag 'v9.9.9' -RefType 'tag' } | Should -Throw "*does not match source version 'v3.0.0'*"
+        { & $metadataScript -Tag 'v3.0.0' -RefType 'branch' } | Should -Throw "*requires a tag ref*"
+        $metadata = & $metadataScript -Tag 'v3.0.0' -RefType 'tag'
+        $metadata.Version | Should -Be '3.0.0'
     }
 }
 

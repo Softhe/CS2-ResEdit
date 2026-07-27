@@ -104,7 +104,7 @@ Describe 'GUI responsive layout regression' -Tag 'GuiRegression' {
             $body.ColumnStyles.Count | Should -Be 1
             $body.RowStyles.Count | Should -Be 3
             $body.RowStyles[0].Height | Should -Be 228
-            $body.RowStyles[1].Height | Should -Be 326
+            $body.RowStyles[1].Height | Should -Be 420
             $body.RowStyles[2].Height | Should -Be 48
             $body.GetCellPosition($accountCard).Row | Should -Be 0
             $body.GetCellPosition($displayCard).Row | Should -Be 1
@@ -166,6 +166,18 @@ Describe 'GUI responsive layout regression' -Tag 'GuiRegression' {
             $parent.Dispose()
         }
     }
+
+    It 'scales display previews to preserve the selected aspect ratio' {
+        $wide = Get-Cs2DisplayPreviewBounds 500 100 1920 1080 10
+        $tall = Get-Cs2DisplayPreviewBounds 500 100 1280 1024 10
+
+        $wide.Width / [double]$wide.Height | Should -BeGreaterThan 1.76
+        $wide.Width / [double]$wide.Height | Should -BeLessThan 1.79
+        $tall.Width / [double]$tall.Height | Should -BeGreaterThan 1.24
+        $tall.Width / [double]$tall.Height | Should -BeLessThan 1.26
+        $wide.Width | Should -BeGreaterThan $tall.Width
+        (Get-Cs2DisplayPreviewBounds 10 10 1920 1080 10).IsEmpty | Should -BeTrue
+    }
 }
 
 Describe 'GUI keyboard and accessibility contracts' -Tag 'GuiRegression' {
@@ -207,6 +219,7 @@ Describe 'GUI keyboard and accessibility contracts' -Tag 'GuiRegression' {
             '\$heightBox\.AccessibleName\s*=\s*''Custom height'''
             '\$currentPreview\.AccessibleName\s*=\s*''Current display settings'''
             '\$pendingPreview\.AccessibleName\s*=\s*''Pending display settings'''
+            '\$displayPreview\.AccessibleName\s*=\s*''Pending display shape preview'''
             '\$backupCheck\.AccessibleName\s*='
             '\$apply\.AccessibleName\s*='
             '\$statusLabel\.AccessibleName\s*='

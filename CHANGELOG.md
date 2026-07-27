@@ -2,6 +2,13 @@
 
 All notable changes to CS2 Video Config Editor are documented here.
 
+## 3.0.0 - 2026-07-28
+
+- Added a live display-shape preview that scales to the pending resolution and aspect ratio.
+- Integrated the visual preview into both wide and stacked layouts with DPI-aware geometry.
+- Added accessible preview descriptions and regression coverage for 4:3, 5:4, 16:9, and 16:10 geometry.
+- Expanded the stacked display card to keep the new preview readable while retaining scrolling at constrained sizes.
+
 ## 2.1.0 - 2026-07-27
 
 - Expanded the built-in catalog to 23 validated presets, including 1440p- and 4K-class 4:3 and 16:10 alternatives.

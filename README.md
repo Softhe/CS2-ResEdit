@@ -34,6 +34,7 @@ CS2 Video Config Editor finds the video configuration for each local Steam accou
 | **Automatic backups** | Creates a timestamped `.bak` copy before a change unless explicitly disabled. |
 | **Backup restore** | Previews editor backups and restores one atomically while preserving the active file. |
 | **Responsive workflow** | Compares current and pending settings, supports Reset, and reflows for narrow windows. |
+| **Live display preview** | Shows the pending resolution as a scaled monitor shape so aspect-ratio changes are visible before applying. |
 | **Remembered files** | Remembers the last Steam account and up to five recent custom files locally. |
 | **Flexible operation** | Supports the graphical editor, an interactive console, and automation-friendly parameters. |
 | **Private diagnostics** | Exports a read-only JSON support report with paths and Steam identifiers anonymized. |
@@ -193,7 +194,7 @@ Invoke-Pester .\tests
 Build the deterministic ZIP and checksum locally with:
 
 ```powershell
-.\build\Build-Release.ps1 -Version 2.1.0
+.\build\Build-Release.ps1 -Version 3.0.0
 ```
 
 The canonical builder produces byte-identical archives in Windows PowerShell 5.1

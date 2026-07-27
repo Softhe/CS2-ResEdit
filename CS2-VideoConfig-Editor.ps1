@@ -69,7 +69,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ApplicationVersion = '2.1.0'
+$script:ApplicationVersion = '3.0.0'
 $script:SelectedConfigPath = $null
 $script:ModuleRoot = Join-Path $PSScriptRoot 'modules'
 foreach ($moduleName in @(
@@ -468,6 +468,31 @@ function Get-Cs2ResponsiveBreakpoint {
     [int](900 * ([double]$Dpi / 96.0))
 }
 
+function Get-Cs2DisplayPreviewBounds {
+    param(
+        [int]$CanvasWidth,
+        [int]$CanvasHeight,
+        [int]$Width,
+        [int]$Height,
+        [int]$Padding = 10
+    )
+    if ($CanvasWidth -le ($Padding * 2) -or $CanvasHeight -le ($Padding * 2) -or
+        $Width -le 0 -or $Height -le 0) {
+        return New-Object Drawing.Rectangle(0, 0, 0, 0)
+    }
+    $availableWidth = $CanvasWidth - ($Padding * 2)
+    $availableHeight = $CanvasHeight - ($Padding * 2)
+    $scale = [math]::Min($availableWidth / [double]$Width, $availableHeight / [double]$Height)
+    $previewWidth = [math]::Max(1, [int][math]::Round($Width * $scale))
+    $previewHeight = [math]::Max(1, [int][math]::Round($Height * $scale))
+    New-Object Drawing.Rectangle(
+        [int](($CanvasWidth - $previewWidth) / 2),
+        [int](($CanvasHeight - $previewHeight) / 2),
+        $previewWidth,
+        $previewHeight
+    )
+}
+
 function Set-Cs2ResponsiveEditorLayout {
     param(
         [Windows.Forms.Form]$Form,
@@ -503,7 +528,7 @@ function Set-Cs2ResponsiveEditorLayout {
             $Body.RowCount = 3
             [void]$Body.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
             [void]$Body.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 228)))
-            [void]$Body.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 326)))
+            [void]$Body.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 420)))
             [void]$Body.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 48)))
             $Body.SetCellPosition($AccountCard, (New-Object Windows.Forms.TableLayoutPanelCellPosition(0, 0)))
             $Body.SetCellPosition($DisplayCard, (New-Object Windows.Forms.TableLayoutPanelCellPosition(0, 1)))
@@ -694,11 +719,11 @@ function Show-ModernGraphicalEditor {
     $displayCard.TabIndex = 1
     $body.Controls.Add($displayCard, 1, 0)
     $displayLayout = New-Object Windows.Forms.TableLayoutPanel
-    $displayLayout.Dock = 'Fill'; $displayLayout.ColumnCount = 2; $displayLayout.RowCount = 7; $displayLayout.Margin = New-Object Windows.Forms.Padding(0)
+    $displayLayout.Dock = 'Fill'; $displayLayout.ColumnCount = 2; $displayLayout.RowCount = 8; $displayLayout.Margin = New-Object Windows.Forms.Padding(0)
     $displayLayout.TabIndex = 0
     [void]$displayLayout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute', 128)))
     [void]$displayLayout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
-    foreach ($height in @(32, 42, 42, 42, 18, 74, 42)) { [void]$displayLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', $height))) }
+    foreach ($height in @(32, 42, 42, 42, 18, 74, 92, 42)) { [void]$displayLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', $height))) }
     $displayCard.Controls.Add($displayLayout)
 
     $displayTitle = New-Object Windows.Forms.Label
@@ -813,10 +838,46 @@ function Show-ModernGraphicalEditor {
     $previewPanel.Controls.Add($currentCaption, 0, 0); $previewPanel.Controls.Add($pendingCaption, 2, 0)
     $previewPanel.Controls.Add($currentPreview, 0, 1); $previewPanel.Controls.Add($previewArrow, 1, 1); $previewPanel.Controls.Add($pendingPreview, 2, 1)
 
+    $displayPreview = New-Object Windows.Forms.Panel
+    $displayPreview.Dock = 'Fill'; $displayPreview.Margin = New-Object Windows.Forms.Padding(0, 4, 0, 4)
+    $displayPreview.BackColor = $theme.Input
+    $displayPreview.AccessibleName = 'Pending display shape preview'
+    $displayPreview.AccessibleDescription = 'A visual preview of the selected resolution and aspect ratio.'
+    $displayPreview.Tag = [pscustomobject]@{ Width = 1920; Height = 1080; Label = '1920x1080  16:9' }
+    $displayPreview.Add_Paint({
+        param($sender, $eventArgs)
+        $eventArgs.Graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $data = $sender.Tag
+        if ($null -eq $data) { return }
+        $bounds = Get-Cs2DisplayPreviewBounds $sender.ClientSize.Width $sender.ClientSize.Height $data.Width $data.Height 12
+        if ($bounds.Width -le 0 -or $bounds.Height -le 0) { return }
+        $screenBrush = New-Object Drawing.SolidBrush($theme.CardHover)
+        $borderPen = New-Object Drawing.Pen($theme.Primary, 2)
+        $labelBrush = New-Object Drawing.SolidBrush($theme.Text)
+        $format = New-Object Drawing.StringFormat
+        try {
+            $format.Alignment = [Drawing.StringAlignment]::Center
+            $format.LineAlignment = [Drawing.StringAlignment]::Center
+            $eventArgs.Graphics.FillRectangle($screenBrush, $bounds)
+            $eventArgs.Graphics.DrawRectangle($borderPen, $bounds)
+            $eventArgs.Graphics.DrawString(
+                [string]$data.Label,
+                $fontSmall,
+                $labelBrush,
+                (New-Object Drawing.RectangleF($bounds.X, $bounds.Y, $bounds.Width, $bounds.Height)),
+                $format
+            )
+        } finally {
+            $screenBrush.Dispose(); $borderPen.Dispose(); $labelBrush.Dispose(); $format.Dispose()
+        }
+    })
+    $displayPreview.Add_Resize({ param($sender, $eventArgs) $sender.Invalidate() })
+    $displayLayout.Controls.Add($displayPreview, 0, 6); $displayLayout.SetColumnSpan($displayPreview, 2)
+
     $mismatchLabel = New-Object Windows.Forms.Label
     $mismatchLabel.Dock = 'Fill'; $mismatchLabel.ForeColor = $theme.Muted; $mismatchLabel.TextAlign = 'MiddleLeft'
     $mismatchLabel.AutoEllipsis = $true; $mismatchLabel.Visible = $false
-    $displayLayout.Controls.Add($mismatchLabel, 0, 6); $displayLayout.SetColumnSpan($mismatchLabel, 2)
+    $displayLayout.Controls.Add($mismatchLabel, 0, 7); $displayLayout.SetColumnSpan($mismatchLabel, 2)
 
     $statusLabel = New-Object Windows.Forms.Label
     $statusLabel.Dock = 'Fill'; $statusLabel.Margin = New-Object Windows.Forms.Padding(0); $statusLabel.Padding = New-Object Windows.Forms.Padding(14, 0, 14, 0)
@@ -968,6 +1029,13 @@ function Show-ModernGraphicalEditor {
             $pendingPreview.Text = "$($pending.Width)x$($pending.Height)  $pendingMode"
             $pendingPreview.AccessibleName = "Pending display settings: $($pendingPreview.Text)"
             $pendingPreview.AccessibleDescription = "Pending resolution $($pending.Width) by $($pending.Height), aspect mode $pendingMode."
+            $displayPreview.Tag = [pscustomobject]@{
+                Width = $pending.Width
+                Height = $pending.Height
+                Label = "$($pending.Width)x$($pending.Height)  $pendingMode"
+            }
+            $displayPreview.AccessibleDescription = "Visual preview of $($pending.Width) by $($pending.Height), aspect mode $pendingMode."
+            $displayPreview.Invalidate()
             $pendingState = Get-Cs2PendingState $uiState.CurrentConfig $pending $uiState.PathValid
             $apply.Enabled = $pendingState.CanApply
             $reset.Enabled = $pendingState.CanReset
@@ -994,6 +1062,9 @@ function Show-ModernGraphicalEditor {
             $pendingPreview.Text = 'Choose settings'
             $pendingPreview.AccessibleName = 'Pending display settings: choose settings'
             $pendingPreview.AccessibleDescription = 'Pending settings are not complete.'
+            $displayPreview.Tag = $null
+            $displayPreview.AccessibleDescription = 'No pending display settings are available to preview.'
+            $displayPreview.Invalidate()
             $apply.Enabled = $false; $reset.Enabled = $false; $apply.Text = 'Apply changes'
         }
         & $updateApplyStyle
