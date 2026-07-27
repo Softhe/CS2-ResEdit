@@ -21,9 +21,20 @@ BeforeAll {
 }
 
 Describe 'Application metadata and import behavior' {
-    It 'exposes version 2.0.0 when dot-sourced' {
-        $script:ApplicationVersion | Should -Be '2.0.0'
+    It 'exposes version 2.0.1 when dot-sourced' {
+        $script:ApplicationVersion | Should -Be '2.0.1'
         Get-Command Invoke-Cs2VideoConfigEditor | Should -Not -BeNullOrEmpty
+    }
+
+    It 'includes 1728x1080 as a 16:10 preset' {
+        $preset = Get-Cs2ResolutionPresets |
+            Where-Object { $_.Width -eq 1728 -and $_.Height -eq 1080 } |
+            Select-Object -First 1
+
+        $preset | Should -Not -BeNullOrEmpty
+        $preset.Ratio | Should -Be '16:10'
+        $preset.Mode | Should -Be '2'
+        (Resolve-Resolution '1728x1080').Mode | Should -Be '2'
     }
 }
 
@@ -376,10 +387,10 @@ Describe 'Release tooling' {
 
     It 'accepts only a tag matching the application version' {
         $metadataScript = Join-Path $PSScriptRoot '..\build\Test-ReleaseMetadata.ps1'
-        { & $metadataScript -Tag 'v9.9.9' -RefType 'tag' } | Should -Throw "*does not match source version 'v2.0.0'*"
-        { & $metadataScript -Tag 'v2.0.0' -RefType 'branch' } | Should -Throw "*requires a tag ref*"
-        $metadata = & $metadataScript -Tag 'v2.0.0' -RefType 'tag'
-        $metadata.Version | Should -Be '2.0.0'
+        { & $metadataScript -Tag 'v9.9.9' -RefType 'tag' } | Should -Throw "*does not match source version 'v2.0.1'*"
+        { & $metadataScript -Tag 'v2.0.1' -RefType 'branch' } | Should -Throw "*requires a tag ref*"
+        $metadata = & $metadataScript -Tag 'v2.0.1' -RefType 'tag'
+        $metadata.Version | Should -Be '2.0.1'
     }
 }
 

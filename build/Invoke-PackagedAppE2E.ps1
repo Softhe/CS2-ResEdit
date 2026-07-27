@@ -51,7 +51,7 @@ try {
     "setting.defaultresheight"  "768"
     "setting.aspectratiomode"   "0"
 }
-'@ -replace "`n", "`r`n"
+'@ -replace "\r?\n", "`r`n"
     [IO.File]::WriteAllText($configPath, $fixture, (New-Object Text.UTF8Encoding($false)))
     $originalHash = (Get-FileHash $configPath -Algorithm SHA256).Hash
 
