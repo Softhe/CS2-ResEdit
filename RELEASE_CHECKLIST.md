@@ -25,11 +25,11 @@
 
 - [x] Review the complete release-candidate diff.
 - [x] Approve the v2.1.0 release notes and unchanged screenshot.
-- [ ] Commit the intended release-candidate files.
-- [ ] Push the commit and confirm the Test workflow succeeds.
-- [ ] Create and push the annotated `v2.1.0` tag.
-- [ ] Confirm the Release workflow publishes the ZIP and checksum.
-- [ ] Download and verify the published assets and canonical ZIP SHA-256.
+- [x] Commit the intended release-candidate files.
+- [x] Push the commit and confirm the Test workflow succeeds.
+- [x] Create and push the annotated `v2.1.0` tag.
+- [x] Confirm the Release workflow publishes the ZIP and checksum.
+- [x] Download and verify the published assets. The canonical ZIP SHA-256 is `1947fd1fc1ff7ec254212ebd1c4cf5c68c835245b1545429f35193ca951ba64b`.
 
 ## Optional Authenticode enforcement
 
