@@ -1,14 +1,16 @@
-# CS2 Video Config Editor v2.0.1
+# CS2 Video Config Editor v2.1.0
 
-Version 2.0.1 adds the requested `1728x1080` 16:10 preset and improves local
-release-test reliability on Windows checkouts.
+Version 2.1.0 expands the curated display catalog for common laptops, 16:10
+panels, 1440p displays, and 4K displays.
 
 ## Highlights
 
-- Added `1728x1080` to the graphical, console, and command-line 16:10 preset list.
-- Added regression coverage confirming that the preset resolves to CS2 aspect mode `2`.
-- Made the packaged end-to-end fixture produce valid CRLF consistently from either LF or CRLF source checkouts.
-- Preserved all v2.0.0 configuration safety, diagnostics, accessibility, and release-integrity behavior.
+- Expanded the graphical, console, and command-line catalog from 14 to 23 presets.
+- Added 4:3 alternatives through `2880x2160`, including `1920x1440` for 1440p displays.
+- Added 16:10 alternatives through `3456x2160`, including native `2560x1600` and `2880x1800`.
+- Added the common laptop resolution `1366x768`.
+- Added automatic catalog validation and table-driven regression coverage.
+- Kept unsupported ultrawide ratios available through Custom rather than assigning a misleading CS2 aspect mode.
 
 The v2 ZIP contains the launcher and a `modules` directory. Extract and keep the
 complete directory structure together when running the editor.

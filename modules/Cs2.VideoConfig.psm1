@@ -6,20 +6,29 @@ $script:VideoConfigFields = [ordered]@{
     Mode = 'setting.aspectratiomode'
 }
 $script:Resolutions = @(
+    [pscustomobject]@{ Width = 960;  Height = 720;  Ratio = '4:3';   Mode = '0' }
     [pscustomobject]@{ Width = 1024; Height = 768;  Ratio = '4:3';   Mode = '0' }
     [pscustomobject]@{ Width = 1152; Height = 864;  Ratio = '4:3';   Mode = '0' }
     [pscustomobject]@{ Width = 1280; Height = 960;  Ratio = '4:3';   Mode = '0' }
-    [pscustomobject]@{ Width = 1440; Height = 1080; Ratio = '4:3';   Mode = '0' }
     [pscustomobject]@{ Width = 1280; Height = 1024; Ratio = '5:4';   Mode = '0' }
+    [pscustomobject]@{ Width = 1440; Height = 1080; Ratio = '4:3';   Mode = '0' }
+    [pscustomobject]@{ Width = 1920; Height = 1440; Ratio = '4:3';   Mode = '0' }
+    [pscustomobject]@{ Width = 2880; Height = 2160; Ratio = '4:3';   Mode = '0' }
     [pscustomobject]@{ Width = 1280; Height = 720;  Ratio = '16:9';  Mode = '1' }
+    [pscustomobject]@{ Width = 1366; Height = 768;  Ratio = '16:9';  Mode = '1' }
     [pscustomobject]@{ Width = 1600; Height = 900;  Ratio = '16:9';  Mode = '1' }
     [pscustomobject]@{ Width = 1920; Height = 1080; Ratio = '16:9';  Mode = '1' }
     [pscustomobject]@{ Width = 2560; Height = 1440; Ratio = '16:9';  Mode = '1' }
     [pscustomobject]@{ Width = 3840; Height = 2160; Ratio = '16:9';  Mode = '1' }
+    [pscustomobject]@{ Width = 1280; Height = 800;  Ratio = '16:10'; Mode = '2' }
     [pscustomobject]@{ Width = 1440; Height = 900;  Ratio = '16:10'; Mode = '2' }
     [pscustomobject]@{ Width = 1680; Height = 1050; Ratio = '16:10'; Mode = '2' }
     [pscustomobject]@{ Width = 1728; Height = 1080; Ratio = '16:10'; Mode = '2' }
     [pscustomobject]@{ Width = 1920; Height = 1200; Ratio = '16:10'; Mode = '2' }
+    [pscustomobject]@{ Width = 2304; Height = 1440; Ratio = '16:10'; Mode = '2' }
+    [pscustomobject]@{ Width = 2560; Height = 1600; Ratio = '16:10'; Mode = '2' }
+    [pscustomobject]@{ Width = 2880; Height = 1800; Ratio = '16:10'; Mode = '2' }
+    [pscustomobject]@{ Width = 3456; Height = 2160; Ratio = '16:10'; Mode = '2' }
 )
 
 function Get-Cs2ResolutionPresets {
@@ -32,6 +41,49 @@ function Get-Cs2ResolutionPresets {
         }
     })
 }
+
+function Test-Cs2ResolutionPresetCatalog {
+    $ratioDefinitions = @{
+        '4:3' = [pscustomobject]@{ Mode = '0'; Value = 4 / 3.0 }
+        '5:4' = [pscustomobject]@{ Mode = '0'; Value = 5 / 4.0 }
+        '16:9' = [pscustomobject]@{ Mode = '1'; Value = 16 / 9.0 }
+        '16:10' = [pscustomobject]@{ Mode = '2'; Value = 16 / 10.0 }
+    }
+    $seen = @{}
+    $previousMode = -1
+    $previousPixels = 0L
+
+    foreach ($preset in $script:Resolutions) {
+        if ($preset.Width -lt 320 -or $preset.Height -lt 200 -or
+            $preset.Width -gt 32768 -or $preset.Height -gt 32768) {
+            throw "Resolution preset is outside supported limits: $($preset.Width)x$($preset.Height)."
+        }
+        $key = "$($preset.Width)x$($preset.Height)"
+        if ($seen.ContainsKey($key)) { throw "Duplicate resolution preset: $key." }
+        $seen[$key] = $true
+
+        $definition = $ratioDefinitions[$preset.Ratio]
+        if ($null -eq $definition -or $preset.Mode -ne $definition.Mode) {
+            throw "Resolution preset has an invalid ratio or mode: $key $($preset.Ratio) mode $($preset.Mode)."
+        }
+        $actualRatio = $preset.Width / [double]$preset.Height
+        if ([math]::Abs($actualRatio - $definition.Value) -ge 0.01) {
+            throw "Resolution preset dimensions do not match $($preset.Ratio): $key."
+        }
+
+        $mode = [int]$preset.Mode
+        $pixels = [long]$preset.Width * [long]$preset.Height
+        if ($mode -lt $previousMode -or ($mode -eq $previousMode -and $pixels -lt $previousPixels)) {
+            throw "Resolution presets are not sorted by mode and pixel count at $key."
+        }
+        if ($mode -ne $previousMode) { $previousPixels = 0L }
+        $previousMode = $mode
+        $previousPixels = $pixels
+    }
+    return $true
+}
+
+[void](Test-Cs2ResolutionPresetCatalog)
 
 function ConvertTo-AspectMode {
     param([string]$Value)
@@ -320,6 +372,7 @@ function Update-VideoConfig {
 
 Export-ModuleMember -Function @(
     'Get-Cs2ResolutionPresets',
+    'Test-Cs2ResolutionPresetCatalog',
     'ConvertTo-AspectMode',
     'ConvertFrom-AspectMode',
     'Get-AutomaticAspectMode',
