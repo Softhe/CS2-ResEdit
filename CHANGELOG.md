@@ -2,6 +2,13 @@
 
 All notable changes to CS2 Video Config Editor are documented here.
 
+## 2.1.0 - 2026-07-27
+
+- Expanded the built-in catalog to 23 validated presets, including 1440p- and 4K-class 4:3 and 16:10 alternatives.
+- Added `960x720`, `1920x1440`, `2880x2160`, `1366x768`, `1280x800`, `2304x1440`, `2560x1600`, `2880x1800`, and `3456x2160`.
+- Added catalog validation for dimensions, uniqueness, aspect-mode compatibility, mathematical ratio tolerance, and deterministic ordering.
+- Added table-driven regression coverage for every newly curated preset.
+
 ## 2.0.1 - 2026-07-27
 
 - Added `1728x1080` to the built-in 16:10 resolution presets.

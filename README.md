@@ -29,7 +29,7 @@ CS2 Video Config Editor finds the video configuration for each local Steam accou
 | Capability | What it does |
 | --- | --- |
 | **Multiple Steam accounts** | Shows each local PersonaName, Account ID, and SteamID64. |
-| **Common and custom resolutions** | Includes `4:3 / 5:4`, `16:9`, and `16:10` presets plus exact custom dimensions. |
+| **Common and custom resolutions** | Includes 23 validated `4:3 / 5:4`, `16:9`, and `16:10` presets through 4K-class dimensions, plus exact custom dimensions. |
 | **Safe file updates** | Validates required entries, preserves encoding and line endings, and replaces the file atomically. |
 | **Automatic backups** | Creates a timestamped `.bak` copy before a change unless explicitly disabled. |
 | **Backup restore** | Previews editor backups and restores one atomically while preserving the active file. |
@@ -193,7 +193,7 @@ Invoke-Pester .\tests
 Build the deterministic ZIP and checksum locally with:
 
 ```powershell
-.\build\Build-Release.ps1 -Version 2.0.1
+.\build\Build-Release.ps1 -Version 2.1.0
 ```
 
 The canonical builder produces byte-identical archives in Windows PowerShell 5.1

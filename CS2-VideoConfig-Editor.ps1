@@ -69,7 +69,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ApplicationVersion = '2.0.1'
+$script:ApplicationVersion = '2.1.0'
 $script:SelectedConfigPath = $null
 $script:ModuleRoot = Join-Path $PSScriptRoot 'modules'
 foreach ($moduleName in @(

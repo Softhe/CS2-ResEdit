@@ -21,20 +21,43 @@ BeforeAll {
 }
 
 Describe 'Application metadata and import behavior' {
-    It 'exposes version 2.0.1 when dot-sourced' {
-        $script:ApplicationVersion | Should -Be '2.0.1'
+    It 'exposes version 2.1.0 when dot-sourced' {
+        $script:ApplicationVersion | Should -Be '2.1.0'
         Get-Command Invoke-Cs2VideoConfigEditor | Should -Not -BeNullOrEmpty
     }
 
-    It 'includes 1728x1080 as a 16:10 preset' {
-        $preset = Get-Cs2ResolutionPresets |
-            Where-Object { $_.Width -eq 1728 -and $_.Height -eq 1080 } |
-            Select-Object -First 1
+    It 'exposes the complete validated 23-preset catalog' {
+        $expected = @(
+            @{ Width = 960; Height = 720; Ratio = '4:3'; Mode = '0' }
+            @{ Width = 1920; Height = 1440; Ratio = '4:3'; Mode = '0' }
+            @{ Width = 2880; Height = 2160; Ratio = '4:3'; Mode = '0' }
+            @{ Width = 1366; Height = 768; Ratio = '16:9'; Mode = '1' }
+            @{ Width = 1280; Height = 800; Ratio = '16:10'; Mode = '2' }
+            @{ Width = 1728; Height = 1080; Ratio = '16:10'; Mode = '2' }
+            @{ Width = 2304; Height = 1440; Ratio = '16:10'; Mode = '2' }
+            @{ Width = 2560; Height = 1600; Ratio = '16:10'; Mode = '2' }
+            @{ Width = 2880; Height = 1800; Ratio = '16:10'; Mode = '2' }
+            @{ Width = 3456; Height = 2160; Ratio = '16:10'; Mode = '2' }
+        )
+        $presets = @(Get-Cs2ResolutionPresets)
 
-        $preset | Should -Not -BeNullOrEmpty
-        $preset.Ratio | Should -Be '16:10'
-        $preset.Mode | Should -Be '2'
-        (Resolve-Resolution '1728x1080').Mode | Should -Be '2'
+        $presets | Should -HaveCount 23
+        Test-Cs2ResolutionPresetCatalog | Should -BeTrue
+        foreach ($item in $expected) {
+            $matches = @($presets | Where-Object {
+                $_.Width -eq $item.Width -and $_.Height -eq $item.Height
+            })
+            $matches | Should -HaveCount 1
+            $matches[0].Ratio | Should -Be $item.Ratio
+            $matches[0].Mode | Should -Be $item.Mode
+            $resolved = Resolve-Resolution "$($item.Width)x$($item.Height)"
+            $resolved.Width | Should -Be $item.Width
+            $resolved.Height | Should -Be $item.Height
+            $resolved.Mode | Should -Be $item.Mode
+        }
+
+        @($presets | Group-Object { "$($_.Width)x$($_.Height)" } |
+            Where-Object Count -ne 1) | Should -HaveCount 0
     }
 }
 
@@ -387,10 +410,10 @@ Describe 'Release tooling' {
 
     It 'accepts only a tag matching the application version' {
         $metadataScript = Join-Path $PSScriptRoot '..\build\Test-ReleaseMetadata.ps1'
-        { & $metadataScript -Tag 'v9.9.9' -RefType 'tag' } | Should -Throw "*does not match source version 'v2.0.1'*"
-        { & $metadataScript -Tag 'v2.0.1' -RefType 'branch' } | Should -Throw "*requires a tag ref*"
-        $metadata = & $metadataScript -Tag 'v2.0.1' -RefType 'tag'
-        $metadata.Version | Should -Be '2.0.1'
+        { & $metadataScript -Tag 'v9.9.9' -RefType 'tag' } | Should -Throw "*does not match source version 'v2.1.0'*"
+        { & $metadataScript -Tag 'v2.1.0' -RefType 'branch' } | Should -Throw "*requires a tag ref*"
+        $metadata = & $metadataScript -Tag 'v2.1.0' -RefType 'tag'
+        $metadata.Version | Should -Be '2.1.0'
     }
 }
 
