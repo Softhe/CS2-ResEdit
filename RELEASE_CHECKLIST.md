@@ -27,9 +27,9 @@
 - [x] Approve the v3.0.0 release notes and automated visual-regression evidence.
 - [x] Commit the intended release-candidate files.
 - [x] Push the commit and confirm the Test workflow succeeds.
-- [ ] Create and push the annotated `v3.0.0` tag.
+- [x] Create and push the annotated `v3.0.0` tag.
 - [x] Confirm the Release workflow publishes the ZIP and checksum.
-- [ ] Download and verify the published assets and canonical ZIP SHA-256.
+- [x] Download and verify the published assets. The canonical ZIP SHA-256 is `c2646c48766fcf4837bdc4c624ddbd43b371cf043ea9f0f4905b58976d258a0c`.
 
 ## Optional Authenticode enforcement
 
