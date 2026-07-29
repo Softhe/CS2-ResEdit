@@ -10,19 +10,21 @@ BeforeAll {
             [string]$Mode = '1',
             [switch]$DuplicateWidth,
             [switch]$MissingHeight,
+            [switch]$MissingMode,
             [Text.Encoding]$Encoding = (New-Object Text.UTF8Encoding($false))
         )
         $heightLine = if ($MissingHeight) { '' } else { "    `"setting.defaultresheight`"  `"$Height`"`r`n" }
         $duplicateLine = if ($DuplicateWidth) { "    `"setting.defaultres`"        `"$Width`"`r`n" } else { '' }
-        $text = "`"VideoConfig`"`r`n{`r`n    `"setting.defaultres`"        `"$Width`"`r`n$duplicateLine$heightLine    `"setting.aspectratiomode`"   `"$Mode`"`r`n}`r`n"
+        $modeLine = if ($MissingMode) { '' } else { "    `"setting.aspectratiomode`"   `"$Mode`"`r`n" }
+        $text = "`"VideoConfig`"`r`n{`r`n    `"setting.defaultres`"        `"$Width`"`r`n$duplicateLine$heightLine$modeLine}`r`n"
         [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path)) | Out-Null
         [IO.File]::WriteAllText($Path, $text, $Encoding)
     }
 }
 
 Describe 'Application metadata and import behavior' {
-    It 'exposes version 3.0.0 when dot-sourced' {
-        $script:ApplicationVersion | Should -Be '3.0.0'
+    It 'exposes version 3.0.1 when dot-sourced' {
+        $script:ApplicationVersion | Should -Be '3.0.1'
         Get-Command Invoke-Cs2VideoConfigEditor | Should -Not -BeNullOrEmpty
     }
 
@@ -115,6 +117,45 @@ Describe 'Configuration parsing and state' {
         $path = Join-Path $TestDrive 'duplicate.txt'
         Write-TestConfig $path -DuplicateWidth
         { Get-CurrentConfig $path } | Should -Throw "*setting.defaultres*found 2*"
+    }
+
+    It 'rejects dimensions that cannot be represented by the graphical controls' {
+        $invalidWidth = Join-Path $TestDrive 'invalid-width.txt'
+        $invalidHeight = Join-Path $TestDrive 'invalid-height.txt'
+        Write-TestConfig $invalidWidth -Width 0
+        Write-TestConfig $invalidHeight -Height 0
+
+        { Get-CurrentConfig $invalidWidth } | Should -Throw '*width must be between 320 and 32768*'
+        { Get-CurrentConfig $invalidHeight } | Should -Throw '*height must be between 200 and 32768*'
+    }
+
+    It 'rejects an unsupported aspect-ratio mode' {
+        $path = Join-Path $TestDrive 'invalid-mode.txt'
+        Write-TestConfig $path -Mode '3'
+        { Get-CurrentConfig $path } | Should -Throw '*aspect-ratio mode must be 0, 1, or 2*'
+    }
+
+    It 'infers the aspect mode when current CS2 files omit the legacy field' {
+        $path = Join-Path $TestDrive 'modern-format.txt'
+        Write-TestConfig $path -Width 1680 -Height 1050 -MissingMode
+
+        $config = Get-CurrentConfig $path
+        $config.Width | Should -Be 1680
+        $config.Height | Should -Be 1050
+        $config.Mode | Should -Be '2'
+    }
+
+    It 'updates a current-format file without injecting the retired aspect field' {
+        $path = Join-Path $TestDrive 'modern-update.txt'
+        Write-TestConfig $path -Width 1680 -Height 1050 -MissingMode
+        $resolution = New-Resolution 2560 1440 '1'
+
+        (Update-VideoConfig -Path $path -Resolution $resolution -CreateBackup $false).Changed | Should -BeTrue
+        $updatedText = [IO.File]::ReadAllText($path)
+        $updatedText | Should -Match '"setting\.defaultres"\s+"2560"'
+        $updatedText | Should -Match '"setting\.defaultresheight"\s+"1440"'
+        $updatedText | Should -Not -Match 'setting\.aspectratiomode'
+        (Get-CurrentConfig $path).Mode | Should -Be '1'
     }
 
     It 'detects pending changes and no-change state' {
@@ -410,10 +451,10 @@ Describe 'Release tooling' {
 
     It 'accepts only a tag matching the application version' {
         $metadataScript = Join-Path $PSScriptRoot '..\build\Test-ReleaseMetadata.ps1'
-        { & $metadataScript -Tag 'v9.9.9' -RefType 'tag' } | Should -Throw "*does not match source version 'v3.0.0'*"
-        { & $metadataScript -Tag 'v3.0.0' -RefType 'branch' } | Should -Throw "*requires a tag ref*"
-        $metadata = & $metadataScript -Tag 'v3.0.0' -RefType 'tag'
-        $metadata.Version | Should -Be '3.0.0'
+        { & $metadataScript -Tag 'v9.9.9' -RefType 'tag' } | Should -Throw "*does not match source version 'v3.0.1'*"
+        { & $metadataScript -Tag 'v3.0.1' -RefType 'branch' } | Should -Throw "*requires a tag ref*"
+        $metadata = & $metadataScript -Tag 'v3.0.1' -RefType 'tag'
+        $metadata.Version | Should -Be '3.0.1'
     }
 }
 

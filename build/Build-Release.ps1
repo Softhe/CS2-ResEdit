@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '3.0.0',
+    [string]$Version = '3.0.1',
     [string]$OutputDirectory,
     [string]$ManifestPath
 )

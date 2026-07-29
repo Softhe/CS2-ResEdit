@@ -194,7 +194,7 @@ Invoke-Pester .\tests
 Build the deterministic ZIP and checksum locally with:
 
 ```powershell
-.\build\Build-Release.ps1 -Version 3.0.0
+.\build\Build-Release.ps1 -Version 3.0.1
 ```
 
 The canonical builder produces byte-identical archives in Windows PowerShell 5.1

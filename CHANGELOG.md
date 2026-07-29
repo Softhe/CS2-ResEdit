@@ -2,6 +2,13 @@
 
 All notable changes to CS2 Video Config Editor are documented here.
 
+## 3.0.1 - 2026-07-29
+
+- Added compatibility with current CS2 configuration files that omit the retired `setting.aspectratiomode` field.
+- Infer the closest supported aspect family from the stored dimensions when the legacy field is absent.
+- Preserve current-format files during updates instead of injecting the retired field.
+- Reject out-of-range dimensions before they can be assigned to graphical controls.
+
 ## 3.0.0 - 2026-07-28
 
 - Added a live display-shape preview that scales to the pending resolution and aspect ratio.

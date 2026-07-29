@@ -109,6 +109,17 @@ function Get-AutomaticAspectMode {
     return $null
 }
 
+function Get-ClosestAspectMode {
+    param([int]$Width, [int]$Height)
+    if ($Width -le 0 -or $Height -le 0) { return $null }
+    $ratio = $Width / [double]$Height
+    @(
+        [pscustomobject]@{ Mode = '0'; Distance = [math]::Min([math]::Abs($ratio - (4 / 3.0)), [math]::Abs($ratio - (5 / 4.0))) }
+        [pscustomobject]@{ Mode = '1'; Distance = [math]::Abs($ratio - (16 / 9.0)) }
+        [pscustomobject]@{ Mode = '2'; Distance = [math]::Abs($ratio - (16 / 10.0)) }
+    ) | Sort-Object Distance | Select-Object -First 1 -ExpandProperty Mode
+}
+
 function New-Resolution {
     param([int]$Width, [int]$Height, [AllowNull()][string]$Mode)
     $normalizedMode = if ([string]::IsNullOrEmpty($Mode)) { $null } else { $Mode }
@@ -190,10 +201,31 @@ function Get-CurrentConfig {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Configuration file not found: $Path" }
     $file = Get-TextFileInfo $Path
+    $width = [int](Get-ConfigValue $file.Text $script:VideoConfigFields.Width)
+    $height = [int](Get-ConfigValue $file.Text $script:VideoConfigFields.Height)
+    if ($width -lt 320 -or $width -gt 32768) {
+        throw "Configuration width must be between 320 and 32768; found $width."
+    }
+    if ($height -lt 200 -or $height -gt 32768) {
+        throw "Configuration height must be between 200 and 32768; found $height."
+    }
+    $modePattern = '(?m)^[\t ]*"' + [regex]::Escape($script:VideoConfigFields.Mode) + '"[\t ]*"(?<value>[^"\r\n]*)"[\t ]*\r?$'
+    $modeMatches = [regex]::Matches($file.Text, $modePattern)
+    if ($modeMatches.Count -gt 1) {
+        throw "Expected at most one '$($script:VideoConfigFields.Mode)' entry; found $($modeMatches.Count)."
+    }
+    $mode = if ($modeMatches.Count -eq 1) {
+        $modeMatches[0].Groups['value'].Value
+    } else {
+        Get-ClosestAspectMode $width $height
+    }
+    if ($mode -notin @('0', '1', '2')) {
+        throw "Configuration aspect-ratio mode must be 0, 1, or 2; found '$mode'."
+    }
     [pscustomobject]@{
-        Width = [int](Get-ConfigValue $file.Text $script:VideoConfigFields.Width)
-        Height = [int](Get-ConfigValue $file.Text $script:VideoConfigFields.Height)
-        Mode = Get-ConfigValue $file.Text $script:VideoConfigFields.Mode
+        Width = $width
+        Height = $height
+        Mode = $mode
     }
 }
 
@@ -337,8 +369,16 @@ function Update-VideoConfig {
 
     # Validate and update every required entry in memory before touching the file.
     $updated = $file.Text
-    foreach ($property in $script:VideoConfigFields.Keys) {
+    foreach ($property in @('Width', 'Height')) {
         $updated = Set-ConfigValue $updated $script:VideoConfigFields[$property] ([string]$Resolution.$property)
+    }
+    $modeKeyPattern = '(?m)^[\t ]*"' + [regex]::Escape($script:VideoConfigFields.Mode) + '"[\t ]*"[^"\r\n]*"[\t ]*\r?$'
+    $modeEntryCount = [regex]::Matches($updated, $modeKeyPattern).Count
+    if ($modeEntryCount -gt 1) {
+        throw "Expected at most one '$($script:VideoConfigFields.Mode)' entry; found $modeEntryCount. No file was written."
+    }
+    if ($modeEntryCount -eq 1) {
+        $updated = Set-ConfigValue $updated $script:VideoConfigFields.Mode ([string]$Resolution.Mode)
     }
     if ($updated -ceq $file.Text) {
         return [pscustomobject]@{ Changed = $false; BackupPath = $null; RemovedBackups = @(); RetentionWarning = $null }

@@ -1,15 +1,15 @@
-# CS2 Video Config Editor v3.0.0
+# CS2 Video Config Editor v3.0.1
 
-Version 3.0.0 introduces a clearer visual workflow for understanding pending
-display changes before applying them.
+Version 3.0.1 is a compatibility and validation patch for current CS2 video
+configuration files.
 
 ## Highlights
 
-- Added a live monitor-shaped preview for the pending resolution.
-- Preview geometry visibly distinguishes 4:3, 5:4, 16:9, and 16:10 selections.
-- Resolution and aspect labels remain centered inside the preview at different window sizes.
-- Added DPI-aware geometry tests and screen-reader descriptions.
-- Preserved the validated 23-preset catalog and all existing safe-apply, backup, diagnostics, and accessibility behavior.
+- Current CS2 files no longer need the retired `setting.aspectratiomode` entry.
+- The editor infers the closest supported aspect family from resolution dimensions.
+- Applying settings does not inject the retired field into current-format files.
+- Invalid dimensions are rejected before reaching the graphical numeric controls.
+- Legacy files that still contain an explicit aspect mode remain fully supported.
 
-The v2 ZIP contains the launcher and a `modules` directory. Extract and keep the
+The ZIP contains the launcher and a `modules` directory. Extract and keep the
 complete directory structure together when running the editor.

@@ -1,8 +1,8 @@
-# v3.0.0 release checklist
+# v3.0.1 release checklist
 
 ## Local release candidate
 
-- [x] Application version and release-note heading are both `v3.0.0`.
+- [x] Application version and release-note heading are both `v3.0.1`.
 - [x] Windows PowerShell 5.1 parser and Pester suite pass.
 - [x] PowerShell 7 parser and Pester suite pass.
 - [x] Main source and runtime modules are ASCII-compatible.
@@ -24,12 +24,12 @@
 ## Maintainer approval and publication
 
 - [x] Review the complete release-candidate diff.
-- [x] Approve the v3.0.0 release notes and automated visual-regression evidence.
-- [x] Commit the intended release-candidate files.
-- [x] Push the commit and confirm the Test workflow succeeds.
-- [x] Create and push the annotated `v3.0.0` tag.
-- [x] Confirm the Release workflow publishes the ZIP and checksum.
-- [x] Download and verify the published assets. The canonical ZIP SHA-256 is `c2646c48766fcf4837bdc4c624ddbd43b371cf043ea9f0f4905b58976d258a0c`.
+- [x] Approve the v3.0.1 release notes and automated regression evidence.
+- [ ] Commit the intended release-candidate files.
+- [ ] Push the commit and confirm the Test workflow succeeds.
+- [ ] Create and push the annotated `v3.0.1` tag.
+- [ ] Confirm the Release workflow publishes the ZIP and checksum.
+- [ ] Download and verify the published assets. Expected canonical ZIP SHA-256: `5fa24aadc43696f2e90a03185438cd7887c19a78911d4b69ebc99d90820d1c21`.
 
 ## Optional Authenticode enforcement
 
