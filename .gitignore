@@ -1,0 +1,7 @@
+*.bak
+.cs2-video-*.tmp
+.codex-*
+**/bin/
+**/obj/
+dist*/
+TestResults/

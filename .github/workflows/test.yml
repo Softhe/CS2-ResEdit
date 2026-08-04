@@ -1,0 +1,72 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.302
+          cache: true
+          cache-dependency-path: tests/CS2ResEdit.Tests/CS2ResEdit.Tests.csproj
+
+      - name: Restore
+        run: dotnet restore CS2-ResEdit.slnx --locked-mode
+
+      - name: Build
+        run: dotnet build CS2-ResEdit.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test CS2-ResEdit.slnx -c Release --no-build
+
+      - name: Publish self-contained binary
+        shell: pwsh
+        run: ./build/Publish.ps1 -SkipTests -OutputDirectory ./dist
+
+      - name: Smoke-test packaged GUI
+        shell: pwsh
+        env:
+          CS2_RESEDIT_SETTINGS_PATH: ${{ runner.temp }}\cs2-resedit-smoke-settings.json
+        run: |
+          $process = Start-Process ./dist/CS2-ResEdit.exe -PassThru
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(20)
+            do {
+              Start-Sleep -Milliseconds 250
+              $process.Refresh()
+            } until ($process.HasExited -or $process.MainWindowHandle -ne 0 -or [DateTime]::UtcNow -ge $deadline)
+            if ($process.HasExited) { throw "Packaged application exited with code $($process.ExitCode)." }
+            if ($process.MainWindowHandle -eq 0) { throw 'Packaged application did not create its main window.' }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: cs2-resedit-${{ github.sha }}
+          path: |
+            dist/CS2-ResEdit.exe
+            dist/CS2-ResEdit.exe.sha256
+          if-no-files-found: error
+          retention-days: 7

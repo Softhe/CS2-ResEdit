@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/CS2ResEdit.Core/CS2ResEdit.Core.csproj" />
+  <Project Path="src/CS2ResEdit.Editor/CS2ResEdit.Editor.csproj" />
+  <Project Path="tests/CS2ResEdit.Tests/CS2ResEdit.Tests.csproj" />
+</Solution>
