@@ -9,6 +9,7 @@ public sealed class MainForm : BufferedForm
     private readonly PreferencesService preferenceService;
     private readonly IDisplayModeProvider displayProvider;
     private readonly DiagnosticService diagnosticService;
+    private readonly IGameProcessProbe gameProbe;
     private readonly string? settingsPath;
     private readonly string? steamRoot;
     private Preferences preferences = new();
@@ -39,14 +40,16 @@ public sealed class MainForm : BufferedForm
     private int discoveredRootCount;
     private string? selectedPath;
     private VideoConfigState? original;
+    private DateTime loadedWriteTimeUtc;
     private bool loading;
 
-    public MainForm(string? settingsPath = null, string? steamRoot = null, IDisplayModeProvider? displayProvider = null)
+    public MainForm(string? settingsPath = null, string? steamRoot = null, IDisplayModeProvider? displayProvider = null, IGameProcessProbe? gameProbe = null)
     {
         this.settingsPath = settingsPath;
         this.steamRoot = steamRoot;
         preferenceService = new PreferencesService(configs);
         this.displayProvider = displayProvider ?? new WindowsDisplayModeProvider();
+        this.gameProbe = gameProbe ?? new Cs2ProcessProbe();
         diagnosticService = new DiagnosticService(configs);
         Text = "CS2 ResEdit";
         MinimumSize = new Size(960, 760);
@@ -462,14 +465,18 @@ public sealed class MainForm : BufferedForm
         selectedPath = path;
         filePath.Text = path ?? "No valid configuration selected.";
         original = null;
+        loadedWriteTimeUtc = DateTime.MinValue;
         if (path is null) { current.Text = pending.Text = "—"; apply.Enabled = reset.Enabled = false; preview.Invalidate(); return; }
         try
         {
             original = configs.Read(path);
+            loadedWriteTimeUtc = File.GetLastWriteTimeUtc(path);
             ResetPending();
             var account = accounts.SelectedItem as SteamAccount;
             preferences = preferenceService.Save(account?.AccountId, preferenceService.AddRecent(preferences.RecentConfigPaths, path), settingsPath);
-            SetStatus("Configuration loaded.");
+            SetStatus(gameProbe.IsGameRunning()
+                ? "Configuration loaded. Counter-Strike 2 appears to be running — close it before applying."
+                : "Configuration loaded.");
         }
         catch (Exception ex) { ShowError(ex.Message); }
     }
@@ -620,17 +627,52 @@ public sealed class MainForm : BufferedForm
 
     private void Apply()
     {
-        if (selectedPath is null) return;
+        if (selectedPath is null || original is null) return;
         try
         {
+            if (gameProbe.IsGameRunning() && MessageBox.Show(this,
+                    "Counter-Strike 2 appears to be running. The game can overwrite cs2_video.txt with its in-memory settings when it exits. Close the game first, or continue anyway?",
+                    "Game is running", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                SetStatus("Apply cancelled while Counter-Strike 2 is running.", true);
+                return;
+            }
+            if (FileChangedOnDisk(selectedPath, original, out var onDisk))
+            {
+                var reload = MessageBox.Show(this,
+                    $"The configuration changed on disk since it was loaded (on disk now: {onDisk.Width} × {onDisk.Height}). Reload it and discard the pending change?",
+                    "Configuration changed", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (reload == DialogResult.Yes)
+                {
+                    LoadPath(selectedPath);
+                    SetStatus("Configuration reloaded from disk; pending change discarded.", true);
+                    return;
+                }
+            }
             var result = configs.Update(selectedPath, PendingResolution(), createBackup.Checked);
             original = configs.Read(selectedPath);
+            loadedWriteTimeUtc = File.GetLastWriteTimeUtc(selectedPath);
             ResetPending();
             SetStatus(result.Changed
                 ? result.BackupPath is null ? "Changes applied." : $"Changes applied. Backup: {Path.GetFileName(result.BackupPath)}"
                 : "The configuration already has these settings.");
         }
         catch (Exception ex) { ShowError(ex.Message); }
+    }
+
+    private bool FileChangedOnDisk(string path, VideoConfigState loaded, out VideoConfigState onDisk)
+    {
+        onDisk = loaded;
+        try
+        {
+            if (File.GetLastWriteTimeUtc(path) == loadedWriteTimeUtc) return false;
+            onDisk = configs.Read(path);
+            return onDisk != loaded;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     private void ShowBackups()
