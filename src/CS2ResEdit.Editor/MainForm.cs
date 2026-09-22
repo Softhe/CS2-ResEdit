@@ -702,7 +702,9 @@ public sealed class MainForm : BufferedForm
             pending.Text = $"Pending:  {resolution.Width} × {resolution.Height}  ·  {ResolutionCatalog.ModeName(resolution.Mode, resolution.Width, resolution.Height)}";
             var changed = original != new VideoConfigState(resolution.Width, resolution.Height, resolution.Mode);
             apply.Enabled = reset.Enabled = changed;
-            validation.Text = "";
+            validation.Text = ResolutionCatalog.IsStretched(resolution.Width, resolution.Height, resolution.Mode)
+                ? "Ultrawide dimensions will appear stretched in this aspect mode."
+                : "";
             availability.Text = supportedModes.Count == 0 ? "Display modes unavailable"
                 : supportedModes.Contains((resolution.Width, resolution.Height)) ? "✓ Reported for selected display"
                 : "Not reported; custom use is still allowed";

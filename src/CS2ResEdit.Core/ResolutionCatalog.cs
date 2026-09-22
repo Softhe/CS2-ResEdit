@@ -55,6 +55,15 @@ public static partial class ResolutionCatalog
         return choices.MinBy(x => Math.Abs(x.Ratio - ratio)).Mode;
     }
 
+    public static bool IsStretched(int width, int height, int mode)
+    {
+        if (width <= 0 || height <= 0) return false;
+        var actual = (double)width / height;
+        if (mode == 0 && Math.Abs(actual - 1.25) < 0.03) return false;
+        var expected = mode switch { 0 => 4d / 3d, 1 => 16d / 9d, 2 => 16d / 10d, _ => actual };
+        return Math.Abs(actual - expected) / expected > 0.06;
+    }
+
     public static string ModeName(int mode, int width = 4, int height = 3) => mode switch
     {
         0 when Math.Abs((double)width / height - 1.25) < 0.03 => "5:4",
