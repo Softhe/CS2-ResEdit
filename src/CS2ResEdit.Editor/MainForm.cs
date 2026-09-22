@@ -405,6 +405,7 @@ public sealed class MainForm : BufferedForm
     }
 
     private int refreshSequence;
+    private bool accountsRefreshing;
     internal Task? LastAccountsRefresh { get; private set; }
 
     private void RefreshAccounts()
@@ -416,7 +417,7 @@ public sealed class MainForm : BufferedForm
     private async Task RefreshAccountsAsync(int sequence)
     {
         var priorPath = selectedPath;
-        loading = true;
+        accountsRefreshing = true;
         accounts.Enabled = false;
         SetStatus("Discovering Steam accounts…");
         try
@@ -444,7 +445,7 @@ public sealed class MainForm : BufferedForm
                 (priorPath is null && x.AccountId == preferences.LastAccountId && x.HasConfig));
             if (selection < 0) selection = accounts.Items.Cast<object>().OfType<SteamAccount>().ToList().FindIndex(x => x.HasConfig);
             if (selection >= 0) accounts.SelectedIndex = selection;
-            loading = false;
+            accountsRefreshing = false;
             accounts.Enabled = true;
             AccountChanged();
             SetStatus(accounts.Items.Count == 0 ? "No Steam accounts found. Use Browse to select cs2_video.txt." : "Steam accounts refreshed.");
@@ -452,7 +453,7 @@ public sealed class MainForm : BufferedForm
         catch (Exception ex)
         {
             if (sequence != refreshSequence || IsDisposed || Disposing) return;
-            loading = false;
+            accountsRefreshing = false;
             accounts.Enabled = true;
             SetStatus($"Steam discovery failed: {ex.Message}", true);
         }
@@ -460,7 +461,7 @@ public sealed class MainForm : BufferedForm
 
     private void AccountChanged()
     {
-        if (loading || accounts.SelectedItem is not SteamAccount account) return;
+        if (loading || accountsRefreshing || accounts.SelectedItem is not SteamAccount account) return;
         if (!account.HasConfig) { LoadPath(null); SetStatus("This account does not have a CS2 video configuration.", true); return; }
         LoadPath(account.ConfigPath);
     }
