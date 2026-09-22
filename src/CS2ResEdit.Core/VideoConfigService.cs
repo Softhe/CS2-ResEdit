@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -132,13 +133,18 @@ public sealed partial class VideoConfigService
         return regex.Replace(text, m => m.Groups["prefix"].Value + value + m.Groups["suffix"].Value, 1);
     }
 
-    private static Regex ValueRegex(string key) => new(
-        $@"(?im)^(?<prefix>\s*""{Regex.Escape(key)}""\s+""?)(?<value>-?\d+)(?<suffix>""?.*)$",
-        RegexOptions.CultureInvariant);
+    private static readonly ConcurrentDictionary<string, Regex> ValueRegexCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Regex> BackupNameRegexCache = new(StringComparer.OrdinalIgnoreCase);
 
-    private static Regex BackupNameRegex(string prefix) => new(
-        "^" + Regex.Escape(prefix) + @"\d{8}-\d{6}(?:-\d+)?\.bak$",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static Regex ValueRegex(string key) => ValueRegexCache.GetOrAdd(key, static k => new Regex(
+        $@"(?im)^(?<prefix>\s*""{Regex.Escape(k)}""\s+""?)(?<value>-?\d+)(?<suffix>""?.*)$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled,
+        TimeSpan.FromSeconds(5)));
+
+    private static Regex BackupNameRegex(string prefix) => BackupNameRegexCache.GetOrAdd(prefix, static p => new Regex(
+        "^" + Regex.Escape(p) + @"\d{8}-\d{6}(?:-\d+)?\.bak$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled,
+        TimeSpan.FromSeconds(5)));
 
     private static string NewBackupPath(string path)
     {
