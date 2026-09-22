@@ -394,7 +394,11 @@ internal sealed class AnnouncingLabel : Label
 {
     public void Announce()
     {
-        try { AccessibilityNotifyClients(AccessibleEvents.NameChange, -1); }
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(Text)) AccessibleName = Text;
+            AccessibilityNotifyClients(AccessibleEvents.NameChange, -1);
+        }
         catch (Exception) { }
     }
 }
