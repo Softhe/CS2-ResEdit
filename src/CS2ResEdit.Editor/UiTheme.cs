@@ -390,6 +390,19 @@ internal sealed class StableFlatButton : Button
     }
 }
 
+internal sealed class AnnouncingLabel : Label
+{
+    public void Announce()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(Text)) AccessibleName = Text;
+            AccessibilityNotifyClients(AccessibleEvents.NameChange, -1);
+        }
+        catch (Exception) { }
+    }
+}
+
 internal static class DarkTitleBar
 {
     [DllImport("dwmapi.dll")]
