@@ -25,7 +25,7 @@ public sealed class MainForm : BufferedForm
     private readonly Label current = new();
     private readonly Label pending = new();
     private readonly Label filePath = new();
-    private readonly Label status = new();
+    private readonly AnnouncingLabel status = new();
     private readonly CheckBox createBackup = new();
     private readonly Button apply = new StableFlatButton();
     private readonly Button reset = new StableFlatButton();
@@ -67,7 +67,12 @@ public sealed class MainForm : BufferedForm
         Shown += (_, _) => ApplyDarkTitleBar();
         Resize += (_, _) => UpdateResponsiveLayout();
         FormClosed += (_, _) => { PersistWindowPreferences(); UnsubscribeThemeChanges(); };
-        KeyDown += (_, e) => { if (e.KeyCode == Keys.F5) { RefreshAccounts(); e.Handled = true; } };
+        KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.F5) { RefreshAccounts(); e.Handled = true; }
+            else if (e.Control && e.KeyCode == Keys.S) { if (apply.Enabled) Apply(); e.Handled = true; e.SuppressKeyPress = true; }
+            else if (e.Control && e.KeyCode == Keys.R) { if (reset.Enabled) ResetPending(); e.Handled = true; e.SuppressKeyPress = true; }
+        };
     }
 
     private void SubscribeThemeChanges()
@@ -450,6 +455,7 @@ public sealed class MainForm : BufferedForm
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         status.Dock = DockStyle.Fill;
         status.ForeColor = Palette.Muted; status.Padding = new Padding(2, 18, 0, 0); status.AccessibleName = "Application status";
+        status.AccessibleRole = AccessibleRole.StatusBar;
         footer.Controls.Add(status, 0, 0);
         var actions = new BufferedFlowLayoutPanel
         {
@@ -741,11 +747,13 @@ public sealed class MainForm : BufferedForm
                 : "Not reported; custom use is still allowed";
             availability.ForeColor = supportedModes.Contains((resolution.Width, resolution.Height)) ? Palette.Accent : Palette.Muted;
             status.Text = changed ? "Review the pending settings, then apply the change." : "No pending changes.";
+            AnnounceStatus();
         }
         catch (Exception ex)
         {
             pending.Text = "Pending: invalid custom resolution";
             status.Text = ex.Message;
+            AnnounceStatus();
             validation.Text = ex.Message;
             availability.Text = "";
             apply.Enabled = false; reset.Enabled = true;
@@ -1161,7 +1169,18 @@ public sealed class MainForm : BufferedForm
         };
     }
 
-    private void SetStatus(string message, bool warning = false) { status.Text = message; status.ForeColor = warning ? Palette.Warning : Palette.Muted; }
+    private void SetStatus(string message, bool warning = false)
+    {
+        status.Text = message;
+        status.ForeColor = warning ? Palette.Warning : Palette.Muted;
+        AnnounceStatus();
+    }
+
+    private void AnnounceStatus()
+    {
+        try { status.Announce(); }
+        catch (Exception) { }
+    }
     private void ShowError(string message) { SetStatus(message, true); MessageBox.Show(this, message, "CS2 ResEdit", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     private void ApplyDarkTitleBar() => DarkTitleBar.Apply(Handle);
     private void TryLoadIcon()
