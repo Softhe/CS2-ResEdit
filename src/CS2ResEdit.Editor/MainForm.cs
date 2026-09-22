@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using Softhe.CS2ResEdit.Core;
 
 namespace Softhe.CS2ResEdit.Editor;
@@ -62,10 +63,71 @@ public sealed class MainForm : BufferedForm
         ForeColor = Palette.Text;
         TryLoadIcon();
         BuildUi();
-        Load += (_, _) => InitializeData();
+        Load += (_, _) => { SubscribeThemeChanges(); InitializeData(); };
         Shown += (_, _) => ApplyDarkTitleBar();
         Resize += (_, _) => UpdateResponsiveLayout();
+        FormClosed += (_, _) => UnsubscribeThemeChanges();
         KeyDown += (_, e) => { if (e.KeyCode == Keys.F5) { RefreshAccounts(); e.Handled = true; } };
+    }
+
+    private void SubscribeThemeChanges()
+    {
+        Palette.Changed += OnPaletteChanged;
+        try { SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged; }
+        catch (Exception) { }
+    }
+
+    private void UnsubscribeThemeChanges()
+    {
+        Palette.Changed -= OnPaletteChanged;
+        try { SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged; }
+        catch (Exception) { }
+    }
+
+    private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is not (UserPreferenceCategory.Accessibility or UserPreferenceCategory.Color)) return;
+        if (IsDisposed || Disposing || !IsHandleCreated) return;
+        try { BeginInvoke(ApplyPaletteRefresh); }
+        catch (Exception) { }
+    }
+
+    private void OnPaletteChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated) return;
+        ApplyPaletteRefresh();
+    }
+
+    private void ApplyPaletteRefresh()
+    {
+        Palette.Refresh();
+        BackColor = Palette.Window;
+        ForeColor = Palette.Text;
+        contentHost.BackColor = Palette.Window;
+        body.BackColor = Palette.Window;
+        RefreshButtonChrome(apply, primary: true);
+        RefreshButtonChrome(reset, primary: false);
+        Invalidate(true);
+        Update();
+    }
+
+    private static void RefreshButtonChrome(Button button, bool primary)
+    {
+        if (!button.Enabled)
+        {
+            button.BackColor = Palette.Card;
+            button.ForeColor = Palette.Muted;
+            button.FlatAppearance.BorderColor = Palette.BorderStrong;
+        }
+        else
+        {
+            button.BackColor = primary ? Palette.Accent : Palette.Card;
+            button.ForeColor = primary ? Palette.AccentText : Palette.Text;
+            button.FlatAppearance.BorderColor = primary ? Palette.Accent : Palette.BorderStrong;
+        }
+        button.FlatAppearance.MouseOverBackColor = primary ? Palette.AccentHover : Palette.CardHover;
+        button.FlatAppearance.MouseDownBackColor = primary ? Palette.AccentPressed : Palette.Input;
+        button.Invalidate();
     }
 
     private void BuildUi()

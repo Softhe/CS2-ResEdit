@@ -64,7 +64,10 @@ public sealed record ThemePalette(
 
 internal static class Palette
 {
-    public static ThemePalette Current { get; } = ThemePalette.Create(SystemInformation.HighContrast);
+    private static bool highContrast = SystemInformation.HighContrast;
+    public static ThemePalette Current { get; private set; } = ThemePalette.Create(highContrast);
+    public static bool IsHighContrast => highContrast;
+    public static event EventHandler? Changed;
     public static Color Window => Current.Window;
     public static Color Card => Current.Card;
     public static Color CardHover => Current.CardHover;
@@ -82,6 +85,15 @@ internal static class Palette
     public static Color AccentPressed => Current.AccentPressed;
     public static Color AccentSoft => Current.AccentSoft;
     public static Color Warning => Current.Warning;
+
+    public static void Refresh()
+    {
+        var contrast = SystemInformation.HighContrast;
+        if (contrast == highContrast) return;
+        highContrast = contrast;
+        Current = ThemePalette.Create(contrast);
+        Changed?.Invoke(null, EventArgs.Empty);
+    }
 }
 
 public class BufferedForm : Form
