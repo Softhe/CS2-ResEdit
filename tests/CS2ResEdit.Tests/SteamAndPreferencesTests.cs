@@ -86,10 +86,32 @@ public sealed class SteamAndPreferencesTests : IDisposable
     public void ReportsUnsupportedPreferenceSchema()
     {
         var settings = Path.Combine(root, "settings.json");
-        File.WriteAllText(settings, """{"SchemaVersion":2}""");
+        File.WriteAllText(settings, """{"SchemaVersion":99}""");
         var value = new PreferencesService(new VideoConfigService()).Read(settings);
         Assert.NotNull(value.Warning);
         Assert.Empty(value.RecentConfigPaths);
+    }
+
+    [Fact]
+    public void RoundTripsSchemaTwoUiContextAndMigratesSchemaOne()
+    {
+        var config = Path.Combine(root, "cs2_video.txt");
+        File.WriteAllText(config, ValidConfig());
+        var service = new PreferencesService(new VideoConfigService());
+        var settings = Path.Combine(root, "ui-settings.json");
+        service.Save("7", [config], settings, "DISPLAY1", 1, 1260, 900);
+        var restored = service.Read(settings);
+        Assert.Equal(2, restored.SchemaVersion);
+        Assert.Equal("DISPLAY1", restored.LastDisplayDevice);
+        Assert.Equal(1, restored.LastAspectMode);
+        Assert.Equal(1260, restored.WindowWidth);
+        Assert.Equal(900, restored.WindowHeight);
+
+        var legacy = Path.Combine(root, "legacy-settings.json");
+        File.WriteAllText(legacy, """{"SchemaVersion":1,"LastAccountId":"7","RecentConfigPaths":[]}""");
+        var migrated = service.Read(legacy);
+        Assert.Null(migrated.Warning);
+        Assert.Null(migrated.LastDisplayDevice);
     }
 
     [Fact]

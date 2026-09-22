@@ -22,9 +22,13 @@ public sealed record BackupInfo(string Path, DateTime Created, VideoConfigState 
 
 public sealed class Preferences
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public string? LastAccountId { get; set; }
     public List<string> RecentConfigPaths { get; set; } = [];
+    public string? LastDisplayDevice { get; set; }
+    public int? LastAspectMode { get; set; }
+    public int? WindowWidth { get; set; }
+    public int? WindowHeight { get; set; }
     public string? Warning { get; set; }
 }
 

@@ -66,7 +66,7 @@ public sealed class MainForm : BufferedForm
         Load += (_, _) => { SubscribeThemeChanges(); InitializeData(); };
         Shown += (_, _) => ApplyDarkTitleBar();
         Resize += (_, _) => UpdateResponsiveLayout();
-        FormClosed += (_, _) => UnsubscribeThemeChanges();
+        FormClosed += (_, _) => { PersistWindowPreferences(); UnsubscribeThemeChanges(); };
         KeyDown += (_, e) => { if (e.KeyCode == Keys.F5) { RefreshAccounts(); e.Handled = true; } };
     }
 
@@ -81,6 +81,28 @@ public sealed class MainForm : BufferedForm
     {
         Palette.Changed -= OnPaletteChanged;
         try { SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged; }
+        catch (Exception) { }
+    }
+
+    private Preferences SavePreferences(string? accountIdOverride = null)
+    {
+        var account = accounts.SelectedItem as SteamAccount;
+        var recents = preferences.RecentConfigPaths;
+        if (selectedPath is not null)
+            recents = preferenceService.AddRecent(recents, selectedPath);
+        return preferenceService.Save(
+            accountIdOverride ?? account?.AccountId ?? preferences.LastAccountId,
+            recents,
+            settingsPath,
+            (displays.SelectedItem as DisplayInfo)?.DeviceName ?? preferences.LastDisplayDevice,
+            aspect.SelectedIndex >= 0 ? aspect.SelectedIndex : preferences.LastAspectMode,
+            Width,
+            Height);
+    }
+
+    private void PersistWindowPreferences()
+    {
+        try { preferences = SavePreferences(); }
         catch (Exception) { }
     }
 
@@ -455,11 +477,17 @@ public sealed class MainForm : BufferedForm
     {
         preferences = preferenceService.Read(settingsPath);
         if (preferences.Warning is not null) SetStatus(preferences.Warning, true);
+        if (preferences.WindowWidth.HasValue && preferences.WindowHeight.HasValue)
+        {
+            try { Size = new Size(Math.Max(MinimumSize.Width, preferences.WindowWidth.Value), Math.Max(MinimumSize.Height, preferences.WindowHeight.Value)); }
+            catch (Exception) { }
+        }
         RefreshDisplays();
         loading = true;
-        aspect.SelectedIndex = 0;
-        var initialPreset = ResolutionCatalog.RecommendedPreset(0);
-        PopulatePresetChoices(0, initialPreset.Width, initialPreset.Height);
+        var initialAspect = preferences.LastAspectMode is >= 0 and <= 2 ? preferences.LastAspectMode.Value : 0;
+        aspect.SelectedIndex = initialAspect;
+        var initialPreset = ResolutionCatalog.RecommendedPreset(initialAspect);
+        PopulatePresetChoices(initialAspect, initialPreset.Width, initialPreset.Height);
         customWidth.Text = initialPreset.Width.ToString();
         customHeight.Text = initialPreset.Height.ToString();
         loading = false;
@@ -570,7 +598,7 @@ public sealed class MainForm : BufferedForm
             loadedWriteTimeUtc = File.GetLastWriteTimeUtc(path);
             ResetPending();
             var account = accounts.SelectedItem as SteamAccount;
-            preferences = preferenceService.Save(account?.AccountId, preferenceService.AddRecent(preferences.RecentConfigPaths, path), settingsPath);
+            preferences = SavePreferences(account?.AccountId);
             SetStatus(gameProbe.IsGameRunning()
                 ? "Configuration loaded. Counter-Strike 2 appears to be running — close it before applying."
                 : "Configuration loaded.");
@@ -620,6 +648,7 @@ public sealed class MainForm : BufferedForm
     private void AspectChanged()
     {
         if (loading || aspect.SelectedIndex < 0) return;
+        preferences.LastAspectMode = aspect.SelectedIndex;
         var recommended = ResolutionCatalog.RecommendedPreset(aspect.SelectedIndex);
         loading = true;
         PopulatePresetChoices(aspect.SelectedIndex, recommended.Width, recommended.Height);
@@ -631,7 +660,7 @@ public sealed class MainForm : BufferedForm
 
     private void RefreshDisplays()
     {
-        var prior = (displays.SelectedItem as DisplayInfo)?.DeviceName;
+        var prior = (displays.SelectedItem as DisplayInfo)?.DeviceName ?? preferences.LastDisplayDevice;
         try { detectedDisplays = displayProvider.GetDisplays(); }
         catch { detectedDisplays = []; }
         loading = true;
@@ -649,6 +678,8 @@ public sealed class MainForm : BufferedForm
     private void DisplayChanged()
     {
         if (loading) return;
+        if (displays.SelectedItem is DisplayInfo current)
+            preferences.LastDisplayDevice = current.DeviceName;
         supportedModes = displays.SelectedItem is DisplayInfo display
             ? display.Modes.Select(x => (x.Width, x.Height)).ToHashSet()
             : [];
