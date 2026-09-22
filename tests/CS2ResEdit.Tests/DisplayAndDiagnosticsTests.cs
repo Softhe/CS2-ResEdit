@@ -25,10 +25,14 @@ public sealed class DisplayAndDiagnosticsTests : IDisposable
         var json = DiagnosticService.ToJson(report);
         var summary = DiagnosticService.ToSummary(report);
 
-        Assert.Equal(1, report.SchemaVersion);
+        Assert.Equal(2, report.SchemaVersion);
         Assert.Equal("Valid", report.ConfigurationStatus);
         Assert.Equal("CRLF", report.ConfigurationLineEnding);
+        Assert.False(string.IsNullOrWhiteSpace(report.Framework));
+        Assert.Equal(0, report.BackupCount);
         Assert.Contains("1.0.0", summary);
+        Assert.Contains("Runtime:", summary);
+        Assert.Contains("Editor backups:", summary);
         Assert.DoesNotContain(path, json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("personal-account", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("76561198000000000", json, StringComparison.Ordinal);
