@@ -17,6 +17,8 @@ public sealed class PreferencesService(VideoConfigService configs)
         if (!File.Exists(path)) return result;
         try
         {
+            if (new FileInfo(path) is { Exists: true } info && info.Length > 1024 * 1024)
+                throw new InvalidDataException($"Settings file is too large ({info.Length} bytes).");
             var parsed = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(path),
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
                 ?? throw new InvalidDataException("Settings are empty.");

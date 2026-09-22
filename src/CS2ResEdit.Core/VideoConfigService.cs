@@ -242,8 +242,12 @@ public sealed partial class VideoConfigService
 
     private sealed record TextDocument(string Text, Encoding Encoding, bool HasBom)
     {
+        internal const long MaxBytes = 1024 * 1024;
+
         public static TextDocument Load(string path)
         {
+            if (new FileInfo(path) is { Exists: true } info && info.Length > MaxBytes)
+                throw new InvalidDataException($"Configuration file is too large ({info.Length} bytes; limit {MaxBytes}).");
             var bytes = File.ReadAllBytes(path);
             if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
                 return new TextDocument(Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2), Encoding.Unicode, true);
