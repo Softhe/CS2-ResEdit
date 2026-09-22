@@ -404,35 +404,64 @@ public sealed class MainForm : BufferedForm
         RefreshAccounts();
     }
 
+    private int refreshSequence;
+    private bool accountsRefreshing;
+    internal Task? LastAccountsRefresh { get; private set; }
+
     private void RefreshAccounts()
     {
+        var sequence = ++refreshSequence;
+        LastAccountsRefresh = RefreshAccountsAsync(sequence);
+    }
+
+    private async Task RefreshAccountsAsync(int sequence)
+    {
         var priorPath = selectedPath;
-        loading = true;
-        accounts.Items.Clear();
-        IReadOnlyList<string> roots = steamRoot is null
-            ? steam.GetRoots()
-            : Directory.Exists(steamRoot) ? [Path.GetFullPath(steamRoot)] : [];
-        var discoveredAccounts = steam.GetAccounts(roots);
-        discoveredRootCount = roots.Count;
-        discoveredAccountCount = discoveredAccounts.Count;
-        foreach (var account in discoveredAccounts) accounts.Items.Add(account);
-        foreach (var path in preferences.RecentConfigPaths.Where(File.Exists))
-            if (!accounts.Items.Cast<object>().OfType<SteamAccount>().Any(x => string.Equals(x.ConfigPath, path, StringComparison.OrdinalIgnoreCase)))
-                accounts.Items.Add(new SteamAccount($"Custom file  -  {path}", "", 0, "Custom file", null, false, path, true, File.GetLastWriteTime(path)));
-        accounts.DisplayMember = nameof(SteamAccount.DisplayName);
-        var selection = accounts.Items.Cast<object>().OfType<SteamAccount>().ToList().FindIndex(x =>
-            string.Equals(x.ConfigPath, priorPath, StringComparison.OrdinalIgnoreCase) ||
-            (priorPath is null && x.AccountId == preferences.LastAccountId && x.HasConfig));
-        if (selection < 0) selection = accounts.Items.Cast<object>().OfType<SteamAccount>().ToList().FindIndex(x => x.HasConfig);
-        if (selection >= 0) accounts.SelectedIndex = selection;
-        loading = false;
-        AccountChanged();
-        SetStatus(accounts.Items.Count == 0 ? "No Steam accounts found. Use Browse to select cs2_video.txt." : "Steam accounts refreshed.");
+        accountsRefreshing = true;
+        accounts.Enabled = false;
+        SetStatus("Discovering Steam accounts…");
+        try
+        {
+            var snapshot = await Task.Run(() =>
+            {
+                IReadOnlyList<string> roots = steamRoot is null
+                    ? steam.GetRoots()
+                    : Directory.Exists(steamRoot) ? [Path.GetFullPath(steamRoot)] : [];
+                var discovered = steam.GetAccounts(roots);
+                var recents = preferences.RecentConfigPaths.Where(File.Exists).ToArray();
+                return (roots, discovered, recents);
+            }).ConfigureAwait(true);
+            if (sequence != refreshSequence || IsDisposed || Disposing) return;
+            accounts.Items.Clear();
+            discoveredRootCount = snapshot.roots.Count;
+            discoveredAccountCount = snapshot.discovered.Count;
+            foreach (var account in snapshot.discovered) accounts.Items.Add(account);
+            foreach (var path in snapshot.recents)
+                if (!accounts.Items.Cast<object>().OfType<SteamAccount>().Any(x => string.Equals(x.ConfigPath, path, StringComparison.OrdinalIgnoreCase)))
+                    accounts.Items.Add(new SteamAccount($"Custom file  -  {path}", "", 0, "Custom file", null, false, path, true, File.GetLastWriteTime(path)));
+            accounts.DisplayMember = nameof(SteamAccount.DisplayName);
+            var selection = accounts.Items.Cast<object>().OfType<SteamAccount>().ToList().FindIndex(x =>
+                string.Equals(x.ConfigPath, priorPath, StringComparison.OrdinalIgnoreCase) ||
+                (priorPath is null && x.AccountId == preferences.LastAccountId && x.HasConfig));
+            if (selection < 0) selection = accounts.Items.Cast<object>().OfType<SteamAccount>().ToList().FindIndex(x => x.HasConfig);
+            if (selection >= 0) accounts.SelectedIndex = selection;
+            accountsRefreshing = false;
+            accounts.Enabled = true;
+            AccountChanged();
+            SetStatus(accounts.Items.Count == 0 ? "No Steam accounts found. Use Browse to select cs2_video.txt." : "Steam accounts refreshed.");
+        }
+        catch (Exception ex)
+        {
+            if (sequence != refreshSequence || IsDisposed || Disposing) return;
+            accountsRefreshing = false;
+            accounts.Enabled = true;
+            SetStatus($"Steam discovery failed: {ex.Message}", true);
+        }
     }
 
     private void AccountChanged()
     {
-        if (loading || accounts.SelectedItem is not SteamAccount account) return;
+        if (loading || accountsRefreshing || accounts.SelectedItem is not SteamAccount account) return;
         if (!account.HasConfig) { LoadPath(null); SetStatus("This account does not have a CS2 video configuration.", true); return; }
         LoadPath(account.ConfigPath);
     }
