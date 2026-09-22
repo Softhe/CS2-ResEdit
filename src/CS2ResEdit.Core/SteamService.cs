@@ -84,6 +84,7 @@ public sealed class SteamService
         if (!File.Exists(path)) return [];
         try
         {
+            if (new FileInfo(path) is { Exists: true } info && info.Length > 5 * 1024 * 1024) return [];
             var root = ValveKeyValues.Parse(File.ReadAllText(path));
             var users = root.GetObjects("users").FirstOrDefault();
             if (users is null) return [];
