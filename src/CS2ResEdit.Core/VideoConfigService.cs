@@ -47,6 +47,12 @@ public sealed partial class VideoConfigService
         {
             backupPath = NewBackupPath(fullPath);
             File.Copy(fullPath, backupPath, false);
+            try { _ = Read(backupPath); }
+            catch
+            {
+                try { File.Delete(backupPath); } catch (Exception) { }
+                throw;
+            }
         }
 
         try
@@ -57,7 +63,10 @@ public sealed partial class VideoConfigService
         catch
         {
             if (backupPath is not null && File.Exists(backupPath))
+            {
+                ClearReadOnly(fullPath);
                 File.Copy(backupPath, fullPath, true);
+            }
             throw;
         }
         return new UpdateResult(true, backupPath);
@@ -77,7 +86,8 @@ public sealed partial class VideoConfigService
                 catch { return null; }
             })
             .OfType<BackupInfo>()
-            .OrderByDescending(x => x.Created)
+            .OrderByDescending(x => BackupOrderKey(Path.GetFileName(x.Path), prefix))
+            .ThenByDescending(x => x.Created)
             .ToArray();
     }
 
@@ -92,8 +102,14 @@ public sealed partial class VideoConfigService
 
         var rollback = NewBackupPath(fullConfig);
         File.Copy(fullConfig, rollback, false);
+        _ = Read(rollback);
         try { AtomicWrite(fullConfig, File.ReadAllBytes(fullBackup)); }
-        catch { File.Copy(rollback, fullConfig, true); throw; }
+        catch
+        {
+            ClearReadOnly(fullConfig);
+            File.Copy(rollback, fullConfig, true);
+            throw;
+        }
         RetainBackups(fullConfig);
         return rollback;
     }
@@ -126,19 +142,58 @@ public sealed partial class VideoConfigService
 
     private static string NewBackupPath(string path)
     {
-        var stem = path + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".bak";
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        var stem = path + "." + stamp + ".bak";
         if (!File.Exists(stem)) return stem;
         for (var i = 1; ; i++)
         {
-            var candidate = path + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss") + $"-{i}.bak";
+            var candidate = path + "." + stamp + $"-{i}.bak";
             if (!File.Exists(candidate)) return candidate;
         }
+    }
+
+    private static (DateTime Stamp, int Sequence) BackupOrderKey(string fileName, string prefix)
+    {
+        var rest = fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? fileName[prefix.Length..]
+            : fileName;
+        if (rest.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
+            rest = rest[..^4];
+        var sequence = 0;
+        var dash = rest.LastIndexOf('-');
+        var stampText = rest;
+        if (dash >= 0 && rest[(dash + 1)..].All(char.IsDigit) && rest[..dash].Length == "yyyyMMdd-HHmmss".Length)
+        {
+            if (int.TryParse(rest[(dash + 1)..], out var parsed)) sequence = parsed;
+            stampText = rest[..dash];
+        }
+        if (System.Globalization.CultureInfo.InvariantCulture is var culture &&
+            DateTime.TryParseExact(stampText, "yyyyMMdd-HHmmss", culture,
+                System.Globalization.DateTimeStyles.None, out var stamp))
+            return (stamp, sequence);
+        return (DateTime.MinValue, sequence);
+    }
+
+    private static void ClearReadOnly(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return;
+            var attributes = File.GetAttributes(path);
+            if ((attributes & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+        }
+        catch (Exception) { }
     }
 
     private void RetainBackups(string path)
     {
         foreach (var backup in GetBackups(path).Skip(5))
-            File.Delete(backup.Path);
+        {
+            ClearReadOnly(backup.Path);
+            try { File.Delete(backup.Path); }
+            catch (Exception) { }
+        }
     }
 
     private static void AtomicWrite(string path, byte[] bytes)
@@ -148,7 +203,11 @@ public sealed partial class VideoConfigService
         File.WriteAllBytes(temporary, bytes);
         try
         {
-            if (File.Exists(path)) File.Replace(temporary, path, null);
+            if (File.Exists(path))
+            {
+                ClearReadOnly(path);
+                File.Replace(temporary, path, null);
+            }
             else File.Move(temporary, path);
         }
         finally
