@@ -70,8 +70,8 @@ public sealed class MainForm : BufferedForm
         KeyDown += (_, e) =>
         {
             if (e.KeyCode == Keys.F5) { RefreshAccounts(); e.Handled = true; }
-            else if (e.Control && e.KeyCode == Keys.S) { if (apply.Enabled) Apply(); e.Handled = true; e.SuppressKeyPress = true; }
-            else if (e.Control && e.KeyCode == Keys.R) { if (reset.Enabled) ResetPending(); e.Handled = true; e.SuppressKeyPress = true; }
+            else if (e.Modifiers == Keys.Control && e.KeyCode == Keys.S) { if (apply.Enabled) Apply(); e.Handled = true; e.SuppressKeyPress = true; }
+            else if (e.Modifiers == Keys.Control && e.KeyCode == Keys.R) { if (reset.Enabled) ResetPending(); e.Handled = true; e.SuppressKeyPress = true; }
         };
     }
 
