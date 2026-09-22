@@ -144,12 +144,30 @@ public sealed partial class VideoConfigService
     {
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
         var stem = path + "." + stamp + ".bak";
-        if (!File.Exists(stem)) return stem;
-        for (var i = 1; ; i++)
+        // Never reuse a freed stem while suffixed siblings from the same second
+        // exist: the stem sorts oldest and would be pruned as soon as retention
+        // runs, deleting a just-created backup. Continue the sequence instead.
+        var max = -1;
+        var directory = Path.GetDirectoryName(path);
+        var prefix = Path.GetFileName(path) + ".";
+        if (directory is not null && Directory.Exists(directory))
         {
-            var candidate = path + "." + stamp + $"-{i}.bak";
-            if (!File.Exists(candidate)) return candidate;
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(directory, prefix + stamp + "-*.bak"))
+                {
+                    var core = Path.GetFileName(file)[prefix.Length..];
+                    if (core.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
+                        core = core[..^4];
+                    var dash = core.LastIndexOf('-');
+                    if (dash >= 0 && core[..dash] == stamp && int.TryParse(core[(dash + 1)..], out var n))
+                        max = Math.Max(max, n);
+                }
+            }
+            catch (Exception) { }
         }
+        if (!File.Exists(stem) && max < 0) return stem;
+        return path + "." + stamp + "-" + Math.Max(1, max + 1) + ".bak";
     }
 
     private static (DateTime Stamp, int Sequence) BackupOrderKey(string fileName, string prefix)
