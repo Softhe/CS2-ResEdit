@@ -13,23 +13,29 @@ public sealed class DiagnosticService(VideoConfigService configs)
         IReadOnlyList<DisplayInfo> displays,
         int steamRootCount,
         int accountCount,
-        string? configPath)
+        string? configPath,
+        bool highContrast = false)
     {
         ConfigurationInspection? inspection = null;
         string status = configPath is null ? "Not selected" : "Valid";
         string? error = null;
+        var backupCount = 0;
         if (configPath is not null)
         {
             try { inspection = configs.Inspect(configPath); }
             catch (Exception ex) { status = "Invalid"; error = ex.GetType().Name; }
+            try { backupCount = configs.GetBackups(configPath).Count; }
+            catch (Exception) { backupCount = 0; }
         }
 
         return new DiagnosticReport(
-            1,
+            2,
             DateTime.UtcNow,
             applicationVersion,
             RuntimeInformation.OSDescription,
             RuntimeInformation.ProcessArchitecture.ToString(),
+            RuntimeInformation.FrameworkDescription,
+            highContrast,
             displays.Select(x => new DiagnosticDisplay(x.IsPrimary, x.CurrentWidth, x.CurrentHeight, x.Modes.Count)).ToArray(),
             steamRootCount,
             accountCount,
@@ -37,6 +43,7 @@ public sealed class DiagnosticService(VideoConfigService configs)
             inspection?.Encoding,
             inspection?.HasBom,
             inspection?.LineEnding,
+            backupCount,
             error);
     }
 
@@ -48,10 +55,13 @@ public sealed class DiagnosticService(VideoConfigService configs)
         text.AppendLine($"CS2 ResEdit {report.ApplicationVersion}");
         text.AppendLine($"OS: {report.OperatingSystem}");
         text.AppendLine($"Architecture: {report.Architecture}");
+        text.AppendLine($"Runtime: {report.Framework}");
+        text.AppendLine($"High contrast: {report.HighContrast}");
         text.AppendLine($"Displays: {report.Displays.Count} ({report.Displays.Sum(x => x.ModeCount)} reported modes)");
         text.AppendLine($"Steam roots: {report.SteamRootCount}");
         text.AppendLine($"Accounts discovered: {report.AccountCount}");
         text.AppendLine($"Configuration: {report.ConfigurationStatus}");
+        text.AppendLine($"Editor backups: {report.BackupCount}");
         if (report.ConfigurationEncoding is not null)
             text.AppendLine($"Encoding: {report.ConfigurationEncoding}; BOM: {report.ConfigurationHasBom}; lines: {report.ConfigurationLineEnding}");
         if (report.ErrorCategory is not null) text.AppendLine($"Error category: {report.ErrorCategory}");

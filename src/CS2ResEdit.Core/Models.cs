@@ -69,6 +69,8 @@ public sealed record DiagnosticReport(
     string ApplicationVersion,
     string OperatingSystem,
     string Architecture,
+    string Framework,
+    bool HighContrast,
     IReadOnlyList<DiagnosticDisplay> Displays,
     int SteamRootCount,
     int AccountCount,
@@ -76,4 +78,5 @@ public sealed record DiagnosticReport(
     string? ConfigurationEncoding,
     bool? ConfigurationHasBom,
     string? ConfigurationLineEnding,
+    int BackupCount,
     string? ErrorCategory);

@@ -866,7 +866,7 @@ public sealed class MainForm : BufferedForm
     private void ShowDiagnostics()
     {
         var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "unknown";
-        var report = diagnosticService.Create(version, detectedDisplays, discoveredRootCount, discoveredAccountCount, selectedPath);
+        var report = diagnosticService.Create(version, detectedDisplays, discoveredRootCount, discoveredAccountCount, selectedPath, Palette.IsHighContrast);
         var summary = DiagnosticService.ToSummary(report);
         var json = DiagnosticService.ToJson(report);
         using var dialog = new BufferedForm
