@@ -542,9 +542,15 @@ public sealed class MainForm : BufferedForm
             _ = configs.Read(dialog.FileName);
             preferences.RecentConfigPaths = preferenceService.AddRecent(preferences.RecentConfigPaths, dialog.FileName);
             loading = true;
-            accounts.Items.Add(new SteamAccount($"Custom file  -  {dialog.FileName}", "", 0, "Custom file", null, false,
-                dialog.FileName, true, File.GetLastWriteTime(dialog.FileName)));
-            accounts.SelectedIndex = accounts.Items.Count - 1;
+            var existing = accounts.Items.Cast<object>().OfType<SteamAccount>().ToList()
+                .FindIndex(x => string.Equals(x.ConfigPath, dialog.FileName, StringComparison.OrdinalIgnoreCase));
+            if (existing < 0)
+            {
+                accounts.Items.Add(new SteamAccount($"Custom file  -  {dialog.FileName}", "", 0, "Custom file", null, false,
+                    dialog.FileName, true, File.GetLastWriteTime(dialog.FileName)));
+                accounts.SelectedIndex = accounts.Items.Count - 1;
+            }
+            else accounts.SelectedIndex = existing;
             loading = false;
             LoadPath(dialog.FileName);
         }

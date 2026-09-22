@@ -27,27 +27,56 @@ public sealed class SteamService
         var accounts = new Dictionary<string, SteamAccount>(StringComparer.OrdinalIgnoreCase);
         foreach (var root in roots)
         {
-            var users = ParseLoginUsers(Path.Combine(root, "config", "loginusers.vdf"))
-                .ToDictionary(x => x.SteamId64);
-            var userdata = Path.Combine(root, "userdata");
-            if (!Directory.Exists(userdata)) continue;
-            foreach (var directory in Directory.EnumerateDirectories(userdata))
+            IReadOnlyList<LoginUser> loginUsers;
+            try { loginUsers = ParseLoginUsers(Path.Combine(root, "config", "loginusers.vdf")); }
+            catch (Exception) { loginUsers = []; }
+            var users = loginUsers.ToDictionary(x => x.SteamId64);
+            IReadOnlyList<string> directories;
+            try
             {
-                if (!uint.TryParse(Path.GetFileName(directory), out var accountId)) continue;
-                var steamId = ToSteamId64(accountId);
-                users.TryGetValue(steamId, out var login);
-                var config = Path.Combine(directory, ConfigRelativePath);
-                var exists = File.Exists(config);
-                var persona = login?.PersonaName ?? $"Steam account {accountId}";
-                var display = $"{persona}  -  Account ID {accountId}  -  SteamID64 {steamId}";
-                if (!exists) display += "  (CS2 config not found)";
-                accounts[config] = new SteamAccount(display, accountId.ToString(), steamId, persona,
-                    login?.AccountName, login?.MostRecent ?? false, config, exists,
-                    exists ? File.GetLastWriteTime(config) : DateTime.MinValue);
+                var userdata = Path.Combine(root, "userdata");
+                if (!Directory.Exists(userdata)) continue;
+                directories = Directory.EnumerateDirectories(userdata).ToArray();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                continue;
+            }
+            foreach (var directory in directories)
+            {
+                try
+                {
+                    if (!uint.TryParse(Path.GetFileName(directory), out var accountId)) continue;
+                    var steamId = ToSteamId64(accountId);
+                    users.TryGetValue(steamId, out var login);
+                    var config = Path.Combine(directory, ConfigRelativePath);
+                    var exists = File.Exists(config);
+                    var persona = login?.PersonaName ?? $"Steam account {accountId}";
+                    var display = $"{persona}  -  Account ID {accountId}  -  SteamID64 {steamId}";
+                    if (!exists) display += "  (CS2 config not found)";
+                    var candidate = new SteamAccount(display, accountId.ToString(), steamId, persona,
+                        login?.AccountName, login?.MostRecent ?? false, config, exists,
+                        exists ? File.GetLastWriteTime(config) : DateTime.MinValue);
+                    if (accounts.TryGetValue(candidate.AccountId, out var current) && !Prefer(candidate, current))
+                        continue;
+                    accounts[candidate.AccountId] = candidate;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+                {
+                    continue;
+                }
             }
         }
         return accounts.Values.OrderByDescending(x => x.MostRecent)
             .ThenByDescending(x => x.LastWriteTime).ThenBy(x => x.PersonaName).ToArray();
+    }
+
+    private static bool Prefer(SteamAccount candidate, SteamAccount current)
+    {
+        if (candidate.HasConfig != current.HasConfig) return candidate.HasConfig;
+        if (candidate.LastWriteTime != current.LastWriteTime) return candidate.LastWriteTime > current.LastWriteTime;
+        if (candidate.MostRecent != current.MostRecent) return candidate.MostRecent;
+        return false;
     }
 
     public IReadOnlyList<LoginUser> ParseLoginUsers(string path)
@@ -69,6 +98,8 @@ public sealed class SteamService
         catch (IOException) { return []; }
         catch (UnauthorizedAccessException) { return []; }
         catch (InvalidDataException) { return []; }
+        catch (ArgumentException) { return []; }
+        catch (NotSupportedException) { return []; }
     }
 
     private static void AddRegistryRoot(List<string> roots, RegistryKey hive, string keyPath)
