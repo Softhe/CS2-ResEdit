@@ -22,9 +22,14 @@ public sealed class PreferencesService(VideoConfigService configs)
             var parsed = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(path),
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
                 ?? throw new InvalidDataException("Settings are empty.");
-            if (parsed.SchemaVersion != 1) throw new InvalidDataException($"Unsupported preference schema '{parsed.SchemaVersion}'.");
+            if (parsed.SchemaVersion is not (1 or 2)) throw new InvalidDataException($"Unsupported preference schema '{parsed.SchemaVersion}'.");
+            result.SchemaVersion = 2;
             result.LastAccountId = parsed.LastAccountId;
             result.RecentConfigPaths = Clean(parsed.RecentConfigPaths);
+            result.LastDisplayDevice = string.IsNullOrWhiteSpace(parsed.LastDisplayDevice) ? null : parsed.LastDisplayDevice;
+            result.LastAspectMode = parsed.LastAspectMode is >= 0 and <= 2 ? parsed.LastAspectMode : null;
+            result.WindowWidth = parsed.WindowWidth is >= 400 and <= 10000 ? parsed.WindowWidth : null;
+            result.WindowHeight = parsed.WindowHeight is >= 300 and <= 10000 ? parsed.WindowHeight : null;
         }
         catch (Exception ex)
         {
@@ -33,13 +38,19 @@ public sealed class PreferencesService(VideoConfigService configs)
         return result;
     }
 
-    public Preferences Save(string? lastAccountId, IEnumerable<string> recentPaths, string? path = null)
+    public Preferences Save(string? lastAccountId, IEnumerable<string> recentPaths, string? path = null,
+        string? lastDisplayDevice = null, int? lastAspectMode = null, int? windowWidth = null, int? windowHeight = null)
     {
         path ??= DefaultPath;
         var result = new Preferences
         {
+            SchemaVersion = 2,
             LastAccountId = string.IsNullOrWhiteSpace(lastAccountId) ? null : lastAccountId,
-            RecentConfigPaths = Clean(recentPaths)
+            RecentConfigPaths = Clean(recentPaths),
+            LastDisplayDevice = string.IsNullOrWhiteSpace(lastDisplayDevice) ? null : lastDisplayDevice,
+            LastAspectMode = lastAspectMode is >= 0 and <= 2 ? lastAspectMode : null,
+            WindowWidth = windowWidth is >= 400 and <= 10000 ? windowWidth : null,
+            WindowHeight = windowHeight is >= 300 and <= 10000 ? windowHeight : null
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var temp = path + $".{Guid.NewGuid():N}.tmp";
