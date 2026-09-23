@@ -30,6 +30,7 @@ public sealed class MainForm : BufferedForm
     private readonly Button apply = new StableFlatButton();
     private readonly Button reset = new StableFlatButton();
     private readonly Panel preview = new();
+    private readonly ToolTip shortcutTips = new();
     private readonly TableLayoutPanel body = new BufferedTableLayoutPanel();
     private readonly Panel contentHost = new();
     private TableLayoutPanel? settingsGrid;
@@ -42,6 +43,7 @@ public sealed class MainForm : BufferedForm
     private string? selectedPath;
     private VideoConfigState? original;
     private DateTime loadedWriteTimeUtc;
+    private long loadedFileSize;
     private bool loading;
 
     public MainForm(string? settingsPath = null, string? steamRoot = null, IDisplayModeProvider? displayProvider = null, IGameProcessProbe? gameProbe = null)
@@ -66,7 +68,7 @@ public sealed class MainForm : BufferedForm
         Load += (_, _) => { SubscribeThemeChanges(); InitializeData(); };
         Shown += (_, _) => ApplyDarkTitleBar();
         Resize += (_, _) => UpdateResponsiveLayout();
-        FormClosed += (_, _) => { PersistWindowPreferences(); UnsubscribeThemeChanges(); };
+        FormClosed += (_, _) => { try { refreshCts?.Cancel(); } catch (Exception) { } try { refreshCts?.Dispose(); } catch (Exception) { } try { shortcutTips.Dispose(); } catch (Exception) { } PersistWindowPreferences(); UnsubscribeThemeChanges(); };
         KeyDown += (_, e) =>
         {
             if (e.KeyCode == Keys.F5) { RefreshAccounts(); e.Handled = true; }
@@ -273,8 +275,12 @@ public sealed class MainForm : BufferedForm
         accounts.Dock = DockStyle.Fill;
         accounts.SelectedIndexChanged += (_, _) => AccountChanged();
         accountRow.Controls.Add(accounts, 0, 0);
-        accountRow.Controls.Add(Button("Refresh", (_, _) => RefreshAccounts(), "Refresh Steam accounts"), 1, 0);
-        accountRow.Controls.Add(Button("Browse", (_, _) => Browse(), "Browse for cs2_video.txt"), 2, 0);
+        var refreshButton = Button("Refresh", (_, _) => RefreshAccounts(), "Refresh Steam accounts");
+        shortcutTips.SetToolTip(refreshButton, "Refresh Steam accounts (F5)");
+        var browseButton = Button("Browse", (_, _) => Browse(), "Browse for cs2_video.txt");
+        shortcutTips.SetToolTip(browseButton, "Browse for cs2_video.txt");
+        accountRow.Controls.Add(refreshButton, 1, 0);
+        accountRow.Controls.Add(browseButton, 2, 0);
         settingsGrid.Controls.Add(accountRow, 0, 2);
 
         filePath.AutoEllipsis = true;
@@ -316,6 +322,8 @@ public sealed class MainForm : BufferedForm
 
         ConfigureText(customWidth, "Custom width");
         ConfigureText(customHeight, "Custom height");
+        RestrictToDigits(customWidth);
+        RestrictToDigits(customHeight);
         customWidth.TextChanged += (_, _) => PendingChanged();
         customHeight.TextChanged += (_, _) => PendingChanged();
         customDimensions = new BufferedTableLayoutPanel
@@ -469,9 +477,11 @@ public sealed class MainForm : BufferedForm
         StyleButton(reset, false);
         reset.Text = "Reset"; reset.Size = new Size(104, 42); reset.Enabled = false; reset.AccessibleName = "Reset pending changes";
         reset.Click += (_, _) => ResetPending();
+        shortcutTips.SetToolTip(reset, "Reset pending changes (Ctrl+R)");
         StyleButton(apply, true);
         apply.Text = "Apply changes"; apply.Size = new Size(148, 42); apply.Enabled = false; apply.AccessibleName = "Apply pending changes";
         apply.Click += (_, _) => Apply();
+        shortcutTips.SetToolTip(apply, "Apply pending changes (Ctrl+S)");
         actions.Controls.Add(reset); actions.Controls.Add(apply);
         footer.Controls.Add(actions, 1, 0);
         root.Controls.Add(footer, 0, 2);
@@ -502,15 +512,19 @@ public sealed class MainForm : BufferedForm
 
     private int refreshSequence;
     private bool accountsRefreshing;
+    private CancellationTokenSource? refreshCts;
     internal Task? LastAccountsRefresh { get; private set; }
 
     private void RefreshAccounts()
     {
+        try { refreshCts?.Cancel(); } catch (Exception) { }
+        try { refreshCts?.Dispose(); } catch (Exception) { }
+        refreshCts = new CancellationTokenSource();
         var sequence = ++refreshSequence;
-        LastAccountsRefresh = RefreshAccountsAsync(sequence);
+        LastAccountsRefresh = RefreshAccountsAsync(sequence, refreshCts.Token);
     }
 
-    private async Task RefreshAccountsAsync(int sequence)
+    private async Task RefreshAccountsAsync(int sequence, CancellationToken token)
     {
         var priorPath = selectedPath;
         accountsRefreshing = true;
@@ -520,13 +534,30 @@ public sealed class MainForm : BufferedForm
         {
             var snapshot = await Task.Run(() =>
             {
-                IReadOnlyList<string> roots = steamRoot is null
-                    ? steam.GetRoots()
-                    : Directory.Exists(steamRoot) ? [Path.GetFullPath(steamRoot)] : [];
+                token.ThrowIfCancellationRequested();
+                IReadOnlyList<string> roots;
+                var overrideInvalid = false;
+                if (steamRoot is null)
+                {
+                    roots = steam.GetRoots();
+                }
+                else
+                {
+                    var normalized = SteamService.NormalizeRoot(steamRoot);
+                    if (normalized is not null && Directory.Exists(normalized))
+                        roots = [normalized];
+                    else
+                    {
+                        roots = [];
+                        overrideInvalid = true;
+                    }
+                }
+                token.ThrowIfCancellationRequested();
                 var discovered = steam.GetAccounts(roots);
                 var recents = preferences.RecentConfigPaths.Where(File.Exists).ToArray();
-                return (roots, discovered, recents);
-            }).ConfigureAwait(true);
+                return (roots, discovered, recents, overrideInvalid);
+            }, token).ConfigureAwait(true);
+            token.ThrowIfCancellationRequested();
             if (sequence != refreshSequence || IsDisposed || Disposing) return;
             accounts.Items.Clear();
             discoveredRootCount = snapshot.roots.Count;
@@ -544,7 +575,14 @@ public sealed class MainForm : BufferedForm
             accountsRefreshing = false;
             accounts.Enabled = true;
             AccountChanged();
-            SetStatus(accounts.Items.Count == 0 ? "No Steam accounts found. Use Browse to select cs2_video.txt." : "Steam accounts refreshed.");
+            if (snapshot.overrideInvalid)
+                SetStatus("Custom Steam location is invalid or unavailable. Check CS2_RESEDIT_STEAM_ROOT or use Browse.", true);
+            else
+                SetStatus(accounts.Items.Count == 0 ? "No Steam accounts found. Use Browse to select cs2_video.txt." : "Steam accounts refreshed.");
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer refresh superseded this one; leave UI to the latest run.
         }
         catch (Exception ex)
         {
@@ -597,17 +635,22 @@ public sealed class MainForm : BufferedForm
         filePath.Text = path ?? "No valid configuration selected.";
         original = null;
         loadedWriteTimeUtc = DateTime.MinValue;
+        loadedFileSize = 0;
         if (path is null) { current.Text = pending.Text = "—"; apply.Enabled = reset.Enabled = false; preview.Invalidate(); return; }
         try
         {
             original = configs.Read(path);
             loadedWriteTimeUtc = File.GetLastWriteTimeUtc(path);
+            loadedFileSize = new FileInfo(path).Length;
             ResetPending();
             var account = accounts.SelectedItem as SteamAccount;
             preferences = SavePreferences(account?.AccountId);
-            SetStatus(gameProbe.IsGameRunning()
-                ? "Configuration loaded. Counter-Strike 2 appears to be running — close it before applying."
-                : "Configuration loaded.");
+            SetStatus(ProbeGameStatus() switch
+            {
+                GameRunningState.Running => "Configuration loaded. Counter-Strike 2 appears to be running — close it before applying.",
+                GameRunningState.Unknown => "Configuration loaded. Could not determine whether Counter-Strike 2 is running — close it before applying.",
+                _ => "Configuration loaded."
+            });
         }
         catch (Exception ex) { ShowError(ex.Message); }
     }
@@ -667,8 +710,9 @@ public sealed class MainForm : BufferedForm
     private void RefreshDisplays()
     {
         var prior = (displays.SelectedItem as DisplayInfo)?.DeviceName ?? preferences.LastDisplayDevice;
+        Exception? providerError = null;
         try { detectedDisplays = displayProvider.GetDisplays(); }
-        catch { detectedDisplays = []; }
+        catch (Exception ex) { detectedDisplays = []; providerError = ex; }
         loading = true;
         displays.Items.Clear();
         foreach (var display in detectedDisplays) displays.Items.Add(display);
@@ -679,6 +723,8 @@ public sealed class MainForm : BufferedForm
         displays.SelectedIndex = index >= 0 ? index : 0;
         loading = false;
         DisplayChanged();
+        if (providerError is not null)
+            SetStatus($"Display detection failed ({providerError.GetType().Name}). Availability guidance is unavailable.", true);
     }
 
     private void DisplayChanged()
@@ -700,8 +746,15 @@ public sealed class MainForm : BufferedForm
 
     private void PopulatePresetChoices(int mode, int? width = null, int? height = null)
     {
+        // Display drivers can report odd modes (e.g. 0x0); never let one bad
+        // mode crash the UI thread — skip values the catalog rejects.
         var supported = supportedModes
-            .Select(x => ResolutionCatalog.Parse($"{x.Width}x{x.Height}"))
+            .Select(x =>
+            {
+                try { return ResolutionCatalog.Parse($"{x.Width}x{x.Height}"); }
+                catch (Exception) { return null; }
+            })
+            .OfType<Resolution>()
             .Where(x => x.Mode == mode)
             .OrderBy(x => x.Width).ThenBy(x => x.Height);
         var catalogOnly = ResolutionCatalog.Presets.Where(x => x.Mode == mode &&
@@ -719,6 +772,9 @@ public sealed class MainForm : BufferedForm
     private void SetCustomDimensionsVisible(bool visible)
     {
         if (settingsGrid is null || customDimensions is null) return;
+        // Avoid stranding keyboard focus inside a collapsing panel.
+        if (!visible && (customWidth.Focused || customHeight.Focused))
+            presets.Focus();
         settingsGrid.SuspendLayout();
         customDimensions.Visible = visible;
         customWidth.TabStop = visible;
@@ -742,6 +798,12 @@ public sealed class MainForm : BufferedForm
             validation.Text = ResolutionCatalog.IsStretched(resolution.Width, resolution.Height, resolution.Mode)
                 ? "Ultrawide dimensions will appear stretched in this aspect mode."
                 : "";
+            if (original.Width < ResolutionCatalog.MinWidth || original.Width > ResolutionCatalog.MaxDimension ||
+                original.Height < ResolutionCatalog.MinHeight || original.Height > ResolutionCatalog.MaxDimension)
+            {
+                const string repair = "Current settings are outside the supported range — apply a valid preset to repair.";
+                validation.Text = string.IsNullOrEmpty(validation.Text) ? repair : repair + " " + validation.Text;
+            }
             availability.Text = supportedModes.Count == 0 ? "Display modes unavailable"
                 : supportedModes.Contains((resolution.Width, resolution.Height)) ? "✓ Reported for selected display"
                 : "Not reported; custom use is still allowed";
@@ -756,40 +818,74 @@ public sealed class MainForm : BufferedForm
             AnnounceStatus();
             validation.Text = ex.Message;
             availability.Text = "";
+            preview.AccessibleDescription = "Resolution aspect preview: invalid custom resolution.";
             apply.Enabled = false; reset.Enabled = true;
         }
+        preview.AccessibleDescription = $"Resolution aspect preview. {pending.Text}. {current.Text}.";
         preview.Invalidate();
     }
 
-    private Resolution PendingResolution() => ResolutionCatalog.Parse($"{customWidth.Text}x{customHeight.Text}", aspect.SelectedIndex);
+    private Resolution PendingResolution() => ResolutionCatalog.Parse($"{customWidth.Text}x{customHeight.Text}",
+        aspect.SelectedIndex >= 0 ? aspect.SelectedIndex : null);
+
+    private GameRunningState ProbeGameStatus()
+    {
+        try { return gameProbe.Check(); }
+        catch (Exception) { return GameRunningState.Unknown; }
+    }
 
     private void Apply()
     {
         if (selectedPath is null || original is null) return;
         try
         {
-            if (gameProbe.IsGameRunning() && MessageBox.Show(this,
-                    "Counter-Strike 2 appears to be running. The game can overwrite cs2_video.txt with its in-memory settings when it exits. Close the game first, or continue anyway?",
-                    "Game is running", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            var gameState = ProbeGameStatus();
+            if (gameState != GameRunningState.NotRunning)
             {
-                SetStatus("Apply cancelled while Counter-Strike 2 is running.", true);
-                return;
-            }
-            if (FileChangedOnDisk(selectedPath, original, out var onDisk))
-            {
-                var reload = MessageBox.Show(this,
-                    $"The configuration changed on disk since it was loaded (on disk now: {onDisk.Width} × {onDisk.Height}). Reload it and discard the pending change?",
-                    "Configuration changed", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (reload == DialogResult.Yes)
+                var message = gameState == GameRunningState.Running
+                    ? "Counter-Strike 2 appears to be running. The game can overwrite cs2_video.txt with its in-memory settings when it exits. Close the game first, or continue anyway?"
+                    : "Counter-Strike 2 status could not be determined. The game can overwrite cs2_video.txt with its in-memory settings when it exits. Close the game first, or continue anyway?";
+                var caption = gameState == GameRunningState.Running ? "Game is running" : "Game status unknown";
+                if (MessageBox.Show(this, message, caption, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                 {
-                    LoadPath(selectedPath);
-                    SetStatus("Configuration reloaded from disk; pending change discarded.", true);
+                    SetStatus("Apply cancelled while Counter-Strike 2 status was not safe.", true);
                     return;
+                }
+            }
+            if (FileChangedOnDisk(selectedPath, original, out var onDisk, out var unreadable))
+            {
+                if (unreadable)
+                {
+                    if (MessageBox.Show(this,
+                            "The configuration could not be re-read from disk (it may have been deleted or locked). Continue and overwrite it with the pending change?",
+                            "Configuration unreadable", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) == DialogResult.Cancel)
+                    {
+                        SetStatus("Apply cancelled: the configuration on disk is unreadable.", true);
+                        return;
+                    }
+                }
+                else
+                {
+                    var choice = MessageBox.Show(this,
+                        $"The configuration changed on disk since it was loaded (on disk now: {onDisk.Width} × {onDisk.Height}).\n\nYes = reload from disk and discard the pending change.\nNo = overwrite the disk file with the pending change.\nCancel = go back without doing anything.",
+                        "Configuration changed on disk", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                    if (choice == DialogResult.Yes)
+                    {
+                        LoadPath(selectedPath);
+                        SetStatus("Configuration reloaded from disk; pending change discarded.", true);
+                        return;
+                    }
+                    if (choice == DialogResult.Cancel)
+                    {
+                        SetStatus("Apply cancelled; pending change kept.", true);
+                        return;
+                    }
                 }
             }
             var result = configs.Update(selectedPath, PendingResolution(), createBackup.Checked);
             original = configs.Read(selectedPath);
             loadedWriteTimeUtc = File.GetLastWriteTimeUtc(selectedPath);
+            loadedFileSize = new FileInfo(selectedPath).Length;
             ResetPending();
             SetStatus(result.Changed
                 ? result.BackupPath is null ? "Changes applied." : $"Changes applied. Backup: {Path.GetFileName(result.BackupPath)}"
@@ -798,25 +894,31 @@ public sealed class MainForm : BufferedForm
         catch (Exception ex) { ShowError(ex.Message); }
     }
 
-    private bool FileChangedOnDisk(string path, VideoConfigState loaded, out VideoConfigState onDisk)
+    private bool FileChangedOnDisk(string path, VideoConfigState loaded, out VideoConfigState onDisk, out bool unreadable)
     {
         onDisk = loaded;
+        unreadable = false;
         try
         {
-            if (File.GetLastWriteTimeUtc(path) == loadedWriteTimeUtc) return false;
+            var info = new FileInfo(path);
+            if (info.Exists && info.Length == loadedFileSize &&
+                Math.Abs((info.LastWriteTimeUtc - loadedWriteTimeUtc).TotalSeconds) < 2)
+                return false;
             onDisk = configs.Read(path);
             return onDisk != loaded;
         }
         catch (Exception)
         {
-            return false;
+            // An unreadable file must never look "unchanged": surface it so the
+            // caller asks before overwriting.
+            unreadable = true;
+            return true;
         }
     }
 
     private void ShowBackups()
     {
         if (selectedPath is null) { SetStatus("Select a configuration first.", true); return; }
-        var backups = configs.GetBackups(selectedPath);
         using var dialog = new BufferedForm
         {
             Text = "Configuration backups",
@@ -833,15 +935,15 @@ public sealed class MainForm : BufferedForm
         var list = new ListBox
         {
             Dock = DockStyle.Fill,
-            DisplayMember = nameof(BackupInfo.Path),
+            DisplayMember = nameof(BackupInfo.Display),
             AccessibleName = "Available backups",
+            AccessibleDescription = "Editor backups for this configuration, newest first. Each row shows the file name, creation time, and resolution.",
             BackColor = Palette.Input,
             ForeColor = Palette.Text,
             BorderStyle = BorderStyle.FixedSingle,
             Font = new Font(Font.FontFamily, 10),
             ItemHeight = 30
         };
-        foreach (var item in backups) list.Items.Add(item);
         var details = new Label
         {
             Dock = DockStyle.Bottom,
@@ -850,11 +952,24 @@ public sealed class MainForm : BufferedForm
             ForeColor = Palette.Muted,
             BackColor = Palette.Window
         };
-        list.SelectedIndexChanged += (_, _) =>
+        void UpdateDetails()
         {
             if (list.SelectedItem is BackupInfo item)
-                details.Text = $"{item.Created:G}  ·  {item.State.Width} × {item.State.Height}  ·  {ResolutionCatalog.ModeName(item.State.AspectMode, item.State.Width, item.State.Height)}";
-        };
+                details.Text = $"{item.Created:G}  ·  {item.State.Width} × {item.State.Height}  ·  {ResolutionCatalog.ModeName(item.State.AspectMode, item.State.Width, item.State.Height)}{Environment.NewLine}{item.Path}";
+            else if (list.Items.Count == 0)
+                details.Text = "No editor backups were found. They are created automatically when applying changes with the backup option enabled.";
+            else
+                details.Text = "Select a backup to preview it.";
+        }
+        void LoadBackups()
+        {
+            list.Items.Clear();
+            foreach (var item in configs.GetBackups(selectedPath)) list.Items.Add(item);
+            if (list.Items.Count > 0) list.SelectedIndex = 0;
+            UpdateDetails();
+        }
+        list.SelectedIndexChanged += (_, _) => UpdateDetails();
+        LoadBackups();
         var restore = Button("Restore selected", (_, _) =>
         {
             if (list.SelectedItem is not BackupInfo item) return;
@@ -863,11 +978,24 @@ public sealed class MainForm : BufferedForm
             try { configs.Restore(selectedPath, item.Path); dialog.DialogResult = DialogResult.OK; }
             catch (Exception ex) { MessageBox.Show(dialog, ex.Message, "Restore failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         }, "Restore selected backup");
-        restore.Dock = DockStyle.Bottom;
-        restore.Height = 44;
-        restore.Margin = new Padding(0, 8, 0, 0);
-        dialog.Controls.Add(list); dialog.Controls.Add(details); dialog.Controls.Add(restore);
-        if (backups.Count == 0) details.Text = "No editor backups were found.";
+        restore.AutoSize = false;
+        restore.Size = new Size(170, 40);
+        restore.Margin = new Padding(8, 0, 0, 0);
+        var refresh = Button("Refresh", (_, _) => LoadBackups(), "Refresh backup list");
+        refresh.AutoSize = false;
+        refresh.Size = new Size(120, 40);
+        refresh.Margin = new Padding(8, 0, 0, 0);
+        var actions = new BufferedFlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 52,
+            FlowDirection = FlowDirection.RightToLeft,
+            BackColor = Palette.Window,
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        actions.Controls.Add(restore);
+        actions.Controls.Add(refresh);
+        dialog.Controls.Add(list); dialog.Controls.Add(details); dialog.Controls.Add(actions);
         if (dialog.ShowDialog(this) == DialogResult.OK) { LoadPath(selectedPath); SetStatus("Backup restored successfully."); }
     }
 
@@ -1104,6 +1232,11 @@ public sealed class MainForm : BufferedForm
     private static void ConfigureText(TextBox box, string name)
     {
         box.AccessibleName = name;
+        box.AccessibleDescription = name.StartsWith("Custom width", StringComparison.Ordinal)
+            ? "Custom width in pixels, 320 to 32768. Digits only."
+            : name.StartsWith("Custom height", StringComparison.Ordinal)
+                ? "Custom height in pixels, 200 to 32768. Digits only."
+                : name;
         box.Margin = Padding.Empty;
         box.Dock = DockStyle.Fill;
         box.BackColor = Palette.Input;
@@ -1111,6 +1244,17 @@ public sealed class MainForm : BufferedForm
         box.BorderStyle = BorderStyle.FixedSingle;
         box.Font = new Font("Segoe UI", 11);
         box.Padding = new Padding(8);
+        box.MaxLength = 5;
+        box.ShortcutsEnabled = true;
+    }
+
+    private static void RestrictToDigits(TextBox box)
+    {
+        box.KeyPress += (_, e) =>
+        {
+            if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar))
+                e.Handled = true;
+        };
     }
 
     private static Button Button(string text, EventHandler click, string accessibleName)
@@ -1198,6 +1342,9 @@ public sealed class MainForm : BufferedForm
     {
         base.WndProc(ref message);
         if (message.Msg == 0x007E && IsHandleCreated && !IsDisposed && !Disposing)
-            BeginInvoke((Action)RefreshDisplays);
+        {
+            try { BeginInvoke((Action)RefreshDisplays); }
+            catch (Exception) { }
+        }
     }
 }

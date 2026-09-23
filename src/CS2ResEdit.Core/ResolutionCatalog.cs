@@ -26,21 +26,33 @@ public static partial class ResolutionCatalog
         R(2880,1800,"16:10",2), R(3456,2160,"16:10",2), R(3840,2400,"16:10",2)
     ];
 
+    public const int MinWidth = 320;
+    public const int MaxDimension = 32768;
+    public const int MinHeight = 200;
+    internal const int MaxInputLength = 64;
+
+    /// <summary>Tolerance for recognizing the 5:4 ratio inside aspect mode 0.</summary>
+    private const double FiveFourTolerance = 0.03;
+    /// <summary>Relative deviation that counts as stretched for a given aspect mode.</summary>
+    private const double StretchTolerance = 0.06;
+
     public static Resolution RecommendedPreset(int mode) => mode switch
     {
-        0 => Presets.Single(x => x.Width == 1280 && x.Height == 960),
-        1 => Presets.Single(x => x.Width == 1920 && x.Height == 1080),
-        2 => Presets.Single(x => x.Width == 1680 && x.Height == 1050),
+        0 => Presets.FirstOrDefault(x => x.Width == 1280 && x.Height == 960) ?? new Resolution(1280, 960, "4:3", 0),
+        1 => Presets.FirstOrDefault(x => x.Width == 1920 && x.Height == 1080) ?? new Resolution(1920, 1080, "16:9", 1),
+        2 => Presets.FirstOrDefault(x => x.Width == 1680 && x.Height == 1050) ?? new Resolution(1680, 1050, "16:10", 2),
         _ => throw new ArgumentOutOfRangeException(nameof(mode))
     };
 
-    public static Resolution Parse(string value, int? aspectMode = null)
+    public static Resolution Parse(string? value, int? aspectMode = null)
     {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > MaxInputLength)
+            throw new ArgumentException("Enter a resolution as WIDTHxHEIGHT (320–32768 by 200–32768).");
         var match = ResolutionRegex().Match(value.Trim());
         if (!match.Success ||
             !int.TryParse(match.Groups[1].Value, CultureInfo.InvariantCulture, out var width) ||
             !int.TryParse(match.Groups[2].Value, CultureInfo.InvariantCulture, out var height) ||
-            width < 320 || width > 32768 || height < 200 || height > 32768)
+            width < MinWidth || width > MaxDimension || height < MinHeight || height > MaxDimension)
             throw new ArgumentException("Enter a resolution as WIDTHxHEIGHT (320–32768 by 200–32768).");
 
         var preset = Presets.FirstOrDefault(x => x.Width == width && x.Height == height);
@@ -48,6 +60,12 @@ public static partial class ResolutionCatalog
         return new Resolution(width, height, ModeName(mode, width, height), mode);
     }
 
+    /// <summary>
+    /// Maps dimensions to the nearest of the three aspect modes CS2 supports.
+    /// Ultrawide widths (e.g. 21:9) have no dedicated mode and map to the
+    /// closest family; <see cref="IsStretched"/> warns when the deviation
+    /// would appear stretched.
+    /// </summary>
     public static int AutomaticAspectMode(int width, int height)
     {
         var ratio = (double)width / height;
@@ -59,14 +77,14 @@ public static partial class ResolutionCatalog
     {
         if (width <= 0 || height <= 0) return false;
         var actual = (double)width / height;
-        if (mode == 0 && Math.Abs(actual - 1.25) < 0.03) return false;
+        if (mode == 0 && Math.Abs(actual - 1.25) < FiveFourTolerance) return false;
         var expected = mode switch { 0 => 4d / 3d, 1 => 16d / 9d, 2 => 16d / 10d, _ => actual };
-        return Math.Abs(actual - expected) / expected > 0.06;
+        return Math.Abs(actual - expected) / expected > StretchTolerance;
     }
 
     public static string ModeName(int mode, int width = 4, int height = 3) => mode switch
     {
-        0 when Math.Abs((double)width / height - 1.25) < 0.03 => "5:4",
+        0 when Math.Abs((double)width / height - 1.25) < FiveFourTolerance => "5:4",
         0 => "4:3",
         1 => "16:9",
         2 => "16:10",

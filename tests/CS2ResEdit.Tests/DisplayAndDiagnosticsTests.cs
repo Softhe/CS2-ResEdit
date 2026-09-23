@@ -50,7 +50,8 @@ public sealed class DisplayAndDiagnosticsTests : IDisposable
         var json = DiagnosticService.ToJson(report);
 
         Assert.Equal("Invalid", report.ConfigurationStatus);
-        Assert.Equal(nameof(InvalidDataException), report.ErrorCategory);
+        Assert.StartsWith(nameof(InvalidDataException), report.ErrorCategory, StringComparison.Ordinal);
+        Assert.Contains("HResult", report.ErrorCategory, StringComparison.Ordinal);
         Assert.DoesNotContain(path, json, StringComparison.OrdinalIgnoreCase);
     }
 

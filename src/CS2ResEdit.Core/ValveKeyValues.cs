@@ -15,10 +15,14 @@ public sealed class KeyValuesObject(IReadOnlyList<KeyValueEntry> entries)
 
 public static class ValveKeyValues
 {
+    internal const int MaxDepth = 64;
+    internal const int MaxTokens = 100_000;
+    internal const int MaxTokenLength = 1_000_000;
+
     public static KeyValuesObject Parse(string text)
     {
         var parser = new Parser(text);
-        var result = parser.ReadObject(false);
+        var result = parser.ReadObject(false, 0);
         if (parser.ReadToken() is not null) throw new InvalidDataException("Unexpected trailing KeyValues content.");
         return result;
     }
@@ -26,9 +30,12 @@ public static class ValveKeyValues
     private sealed class Parser(string text)
     {
         private int position;
+        private int tokenCount;
 
-        public KeyValuesObject ReadObject(bool requiresClose)
+        public KeyValuesObject ReadObject(bool requiresClose, int depth)
         {
+            if (depth > MaxDepth)
+                throw new InvalidDataException("KeyValues object exceeds the maximum nesting depth.");
             var entries = new List<KeyValueEntry>();
             while (true)
             {
@@ -47,7 +54,7 @@ public static class ValveKeyValues
 
                 var value = ReadToken() ?? throw new InvalidDataException($"KeyValues entry '{key.Value}' has no value.");
                 if (value.Kind == TokenKind.Open)
-                    entries.Add(new KeyValueEntry(key.Value, null, ReadObject(true)));
+                    entries.Add(new KeyValueEntry(key.Value, null, ReadObject(true, depth + 1)));
                 else if (value.Kind == TokenKind.Value)
                     entries.Add(new KeyValueEntry(key.Value, value.Value, null));
                 else throw new InvalidDataException($"KeyValues entry '{key.Value}' has an invalid value.");
@@ -58,12 +65,19 @@ public static class ValveKeyValues
         {
             SkipTrivia();
             if (position >= text.Length) return null;
+            if (++tokenCount > MaxTokens)
+                throw new InvalidDataException("KeyValues content exceeds the maximum token count.");
+            if (text[position] == '#')
+                throw new InvalidDataException("Unsupported KeyValues directive.");
             if (text[position] == '{') { position++; return new Token(TokenKind.Open, "{"); }
             if (text[position] == '}') { position++; return new Token(TokenKind.Close, "}"); }
             if (text[position] == '"') return new Token(TokenKind.Value, ReadQuoted());
             var start = position;
             while (position < text.Length && !char.IsWhiteSpace(text[position]) && text[position] is not '{' and not '}') position++;
-            return new Token(TokenKind.Value, text[start..position]);
+            var raw = text[start..position];
+            if (raw.Length > MaxTokenLength)
+                throw new InvalidDataException("KeyValues token exceeds the maximum length.");
+            return new Token(TokenKind.Value, raw);
         }
 
         private string ReadQuoted()
@@ -76,7 +90,10 @@ public static class ValveKeyValues
                 if (character == '"') return value.ToString();
                 if (character != '\\') { value.Append(character); continue; }
                 if (position >= text.Length) break;
-                value.Append(text[position++] switch { 'n' => '\n', 'r' => '\r', 't' => '\t', '"' => '"', '\\' => '\\', var other => other });
+                var escaped = text[position++];
+                value.Append(escaped switch { 'n' => "\n", 'r' => "\r", 't' => "\t", '"' => "\"", '\\' => "\\", var other => "\\" + other });
+                if (value.Length > MaxTokenLength)
+                    throw new InvalidDataException("KeyValues string exceeds the maximum length.");
             }
             throw new InvalidDataException("Quoted KeyValues string is not closed.");
         }
@@ -90,6 +107,15 @@ public static class ValveKeyValues
                 {
                     position += 2;
                     while (position < text.Length && text[position] != '\n') position++;
+                    continue;
+                }
+                if (position + 1 < text.Length && text[position] == '/' && text[position + 1] == '*')
+                {
+                    position += 2;
+                    while (position + 1 < text.Length && !(text[position] == '*' && text[position + 1] == '/')) position++;
+                    if (position + 1 >= text.Length)
+                        throw new InvalidDataException("Unterminated KeyValues comment.");
+                    position += 2;
                     continue;
                 }
                 break;
