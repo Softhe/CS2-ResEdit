@@ -2,22 +2,34 @@ using System.Diagnostics;
 
 namespace Softhe.CS2ResEdit.Editor;
 
+public enum GameRunningState
+{
+    NotRunning,
+    Running,
+    Unknown
+}
+
 public interface IGameProcessProbe
 {
-    bool IsGameRunning();
+    GameRunningState Check();
+
+    // Back-compat helper for callers/tests that only need a boolean.
+    bool IsGameRunning() => Check() == GameRunningState.Running;
 }
 
 public sealed class Cs2ProcessProbe : IGameProcessProbe
 {
-    public bool IsGameRunning()
+    public GameRunningState Check()
     {
         try
         {
-            return Process.GetProcessesByName("cs2").Length > 0;
+            return Process.GetProcessesByName("cs2").Length > 0
+                ? GameRunningState.Running
+                : GameRunningState.NotRunning;
         }
         catch (Exception)
         {
-            return false;
+            return GameRunningState.Unknown;
         }
     }
 }

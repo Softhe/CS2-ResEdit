@@ -18,7 +18,10 @@ public sealed record SteamAccount(
     bool HasConfig,
     DateTime LastWriteTime);
 
-public sealed record BackupInfo(string Path, DateTime Created, VideoConfigState State);
+public sealed record BackupInfo(string Path, DateTime Created, VideoConfigState State)
+{
+    public string Display => $"{System.IO.Path.GetFileName(Path)}  ·  {Created:G}  ·  {State.Width} × {State.Height}";
+}
 
 public sealed class Preferences
 {

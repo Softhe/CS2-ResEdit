@@ -23,18 +23,31 @@ public sealed class WindowsDisplayModeProvider : IDisplayModeProvider
             {
                 var mode = DevMode.Create();
                 if (!EnumDisplaySettings(device.DeviceName, modeIndex, ref mode)) break;
-                if (mode.PelsWidth >= 320 && mode.PelsHeight >= 200)
-                    modes.Add(new DisplayResolution((int)mode.PelsWidth, (int)mode.PelsHeight));
+                if (mode.PelsWidth is < 320 or > int.MaxValue || mode.PelsHeight is < 200 or > int.MaxValue)
+                    continue;
+                modes.Add(new DisplayResolution((int)mode.PelsWidth, (int)mode.PelsHeight));
             }
 
             var current = DevMode.Create();
-            var hasCurrent = EnumDisplaySettings(device.DeviceName, CurrentSettings, ref current);
+            var hasCurrent = EnumDisplaySettings(device.DeviceName, CurrentSettings, ref current)
+                && current.PelsWidth is >= 320 and <= int.MaxValue
+                && current.PelsHeight is >= 200 and <= int.MaxValue;
+            var currentWidth = hasCurrent ? (int)current.PelsWidth : 0;
+            var currentHeight = hasCurrent ? (int)current.PelsHeight : 0;
+            if (!hasCurrent && modes.Count > 0)
+            {
+                // Never show a bogus 0x0 current mode; fall back to the largest
+                // reported mode so availability guidance still has a baseline.
+                var fallback = modes.MaxBy(x => (long)x.Width * x.Height)!;
+                currentWidth = fallback.Width;
+                currentHeight = fallback.Height;
+            }
             displays.Add(new DisplayInfo(
                 device.DeviceName,
                 string.IsNullOrWhiteSpace(device.DeviceString) ? $"Display {displays.Count + 1}" : device.DeviceString,
                 (device.StateFlags & PrimaryDevice) != 0,
-                hasCurrent ? (int)current.PelsWidth : 0,
-                hasCurrent ? (int)current.PelsHeight : 0,
+                currentWidth,
+                currentHeight,
                 modes.OrderBy(x => x.Width).ThenBy(x => x.Height).ToArray()));
         }
 

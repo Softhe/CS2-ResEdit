@@ -25,6 +25,10 @@ public sealed partial class VideoConfigService
         return new ConfigurationInspection(state, document.Encoding.WebName, document.HasBom, lineEnding);
     }
 
+    // File-format bounds stay permissive (1..32768): the reader must accept
+    // whatever is on disk — including corrupt or hand-edited values — so the
+    // editor can repair it. Strict dimension floors live in
+    // ResolutionCatalog.Parse, which validates new user input only.
     public VideoConfigState Parse(string text) => new(
         ReadUnique(text, WidthKey),
         ReadUnique(text, HeightKey),
@@ -59,7 +63,6 @@ public sealed partial class VideoConfigService
         try
         {
             AtomicWrite(fullPath, document.Encode(changed));
-            if (createBackup) RetainBackups(fullPath);
         }
         catch
         {
@@ -69,6 +72,13 @@ public sealed partial class VideoConfigService
                 File.Copy(backupPath, fullPath, true);
             }
             throw;
+        }
+        if (createBackup)
+        {
+            // Retention runs after a successful write and must never fail the
+            // apply or roll back a good file when cleanup hits a locked file.
+            try { RetainBackups(fullPath); }
+            catch (Exception) { }
         }
         return new UpdateResult(true, backupPath);
     }
@@ -104,14 +114,15 @@ public sealed partial class VideoConfigService
         var rollback = NewBackupPath(fullConfig);
         File.Copy(fullConfig, rollback, false);
         _ = Read(rollback);
-        try { AtomicWrite(fullConfig, File.ReadAllBytes(fullBackup)); }
+        try { AtomicWrite(fullConfig, TextDocument.ReadAllBytesCapped(fullBackup)); }
         catch
         {
             ClearReadOnly(fullConfig);
             File.Copy(rollback, fullConfig, true);
             throw;
         }
-        RetainBackups(fullConfig);
+        try { RetainBackups(fullConfig); }
+        catch (Exception) { }
         return rollback;
     }
 
@@ -243,12 +254,31 @@ public sealed partial class VideoConfigService
     private sealed record TextDocument(string Text, Encoding Encoding, bool HasBom)
     {
         internal const long MaxBytes = 1024 * 1024;
+        private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
+        /// <summary>Reads a file with a size cap enforced during the read (no TOCTOU).</summary>
+        internal static byte[] ReadAllBytesCapped(string path)
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (stream.Length > MaxBytes)
+                throw new InvalidDataException($"Configuration file is too large ({stream.Length} bytes; limit {MaxBytes}).");
+            using var buffer = new MemoryStream((int)Math.Min(Math.Max(stream.Length, 0), 8192));
+            var chunk = new byte[8192];
+            long total = 0;
+            int read;
+            while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
+            {
+                total += read;
+                if (total > MaxBytes)
+                    throw new InvalidDataException($"Configuration file is too large (over {MaxBytes} bytes).");
+                buffer.Write(chunk, 0, read);
+            }
+            return buffer.ToArray();
+        }
 
         public static TextDocument Load(string path)
         {
-            if (new FileInfo(path) is { Exists: true } info && info.Length > MaxBytes)
-                throw new InvalidDataException($"Configuration file is too large ({info.Length} bytes; limit {MaxBytes}).");
-            var bytes = File.ReadAllBytes(path);
+            var bytes = ReadAllBytesCapped(path);
             if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
                 return new TextDocument(Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2), Encoding.Unicode, true);
             if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
@@ -259,7 +289,14 @@ public sealed partial class VideoConfigService
                 return new TextDocument(Encoding.Unicode.GetString(bytes), Encoding.Unicode, false);
             if (LooksUtf16(bytes, littleEndian: false))
                 return new TextDocument(Encoding.BigEndianUnicode.GetString(bytes), Encoding.BigEndianUnicode, false);
-            return new TextDocument(new UTF8Encoding(false, true).GetString(bytes), new UTF8Encoding(false), false);
+            try
+            {
+                return new TextDocument(StrictUtf8.GetString(bytes), new UTF8Encoding(false), false);
+            }
+            catch (DecoderFallbackException)
+            {
+                throw new InvalidDataException("Configuration is not valid UTF-8. Re-save it as UTF-8 or UTF-16 and try again.");
+            }
         }
 
         public byte[] Encode(string text)

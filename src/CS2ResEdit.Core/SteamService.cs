@@ -12,13 +12,41 @@ public sealed class SteamService
     public IReadOnlyList<string> GetRoots(string? overrideRoot = null)
     {
         var candidates = new List<string>();
-        if (!string.IsNullOrWhiteSpace(overrideRoot)) candidates.Add(overrideRoot);
+        if (NormalizeRoot(overrideRoot) is { } normalizedOverride) candidates.Add(normalizedOverride);
         AddRegistryRoot(candidates, Registry.CurrentUser, @"Software\Valve\Steam");
         AddRegistryRoot(candidates, Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Valve\Steam");
         AddRegistryRoot(candidates, Registry.LocalMachine, @"SOFTWARE\Valve\Steam");
-        candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam"));
-        return candidates.Where(Directory.Exists).Select(Path.GetFullPath)
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        try { candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam")); }
+        catch (Exception) { }
+        var roots = new List<string>();
+        foreach (var candidate in candidates)
+        {
+            string full;
+            try
+            {
+                if (!Directory.Exists(candidate)) continue;
+                full = Path.GetFullPath(candidate);
+            }
+            catch (Exception) { continue; }
+            if (!roots.Contains(full, StringComparer.OrdinalIgnoreCase)) roots.Add(full);
+        }
+        return roots;
+    }
+
+    /// <summary>Normalizes a user-supplied root without throwing. Returns null when unusable.</summary>
+    public static string? NormalizeRoot(string? root)
+    {
+        if (string.IsNullOrWhiteSpace(root)) return null;
+        try
+        {
+            var trimmed = Environment.ExpandEnvironmentVariables(root.Trim().Trim('"').Trim());
+            if (string.IsNullOrWhiteSpace(trimmed)) return null;
+            return Path.GetFullPath(trimmed);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     public IReadOnlyList<SteamAccount> GetAccounts(IEnumerable<string>? roots = null)
@@ -90,7 +118,7 @@ public sealed class SteamService
             if (users is null) return [];
             return users.Entries.Where(x => x.Object is not null && ulong.TryParse(x.Name, out _))
                 .Select(x => new LoginUser(
-                    ulong.Parse(x.Name),
+                    ulong.TryParse(x.Name, out var parsedId) ? parsedId : 0,
                     x.Object!.GetString("AccountName"),
                     x.Object.GetString("PersonaName") ?? "Unknown Steam account",
                     x.Object.GetString("MostRecent") == "1"))

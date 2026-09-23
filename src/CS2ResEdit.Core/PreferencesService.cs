@@ -33,10 +33,21 @@ public sealed class PreferencesService(VideoConfigService configs)
         }
         catch (Exception ex)
         {
-            result.Warning = $"Preferences could not be loaded: {ex.Message}";
+            result.Warning = SanitizeWarning(ex);
         }
         return result;
     }
+
+    internal static string SanitizeWarning(Exception ex) => ex switch
+    {
+        InvalidDataException => $"Preferences could not be loaded: {ex.Message}",
+        System.Text.Json.JsonException => "Preferences could not be loaded: settings file is corrupt.",
+        IOException => "Preferences could not be loaded: settings file is unreadable.",
+        UnauthorizedAccessException => "Preferences could not be loaded: access to the settings file was denied.",
+        ArgumentException => "Preferences could not be loaded: settings location is invalid.",
+        NotSupportedException => "Preferences could not be loaded: settings location is invalid.",
+        _ => "Preferences could not be loaded: unexpected error."
+    };
 
     public Preferences Save(string? lastAccountId, IEnumerable<string> recentPaths, string? path = null,
         string? lastDisplayDevice = null, int? lastAspectMode = null, int? windowWidth = null, int? windowHeight = null)
@@ -64,9 +75,17 @@ public sealed class PreferencesService(VideoConfigService configs)
         return result;
     }
 
-    public List<string> AddRecent(IEnumerable<string> paths, string path) =>
-        new[] { path }.Concat(paths).Select(Path.GetFullPath)
-            .Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList();
+    public List<string> AddRecent(IEnumerable<string> paths, string path)
+    {
+        var ordered = new List<string>();
+        foreach (var candidate in new[] { path }.Concat(paths))
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) continue;
+            try { ordered.Add(Path.GetFullPath(candidate)); }
+            catch (Exception) { }
+        }
+        return ordered.Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList();
+    }
 
     private List<string> Clean(IEnumerable<string>? paths)
     {

@@ -23,7 +23,7 @@ public sealed class DiagnosticService(VideoConfigService configs)
         if (configPath is not null)
         {
             try { inspection = configs.Inspect(configPath); }
-            catch (Exception ex) { status = "Invalid"; error = ex.GetType().Name; }
+            catch (Exception ex) { status = "Invalid"; error = $"{ex.GetType().Name} (HResult 0x{ex.HResult:X8})"; }
             try { backupCount = configs.GetBackups(configPath).Count; }
             catch (Exception) { backupCount = 0; }
         }

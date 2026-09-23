@@ -23,6 +23,13 @@ public sealed class ResolutionTests
         Assert.Throws<ArgumentException>(() => ResolutionCatalog.Parse(input));
 
     [Fact]
+    public void RejectsNullAndOversizeInput()
+    {
+        Assert.Throws<ArgumentException>(() => ResolutionCatalog.Parse(null));
+        Assert.Throws<ArgumentException>(() => ResolutionCatalog.Parse(new string('1', 65)));
+    }
+
+    [Fact]
     public void PresetCatalogIsExpandedAndHasUniqueDimensions()
     {
         Assert.True(ResolutionCatalog.Presets.Count >= 40);
