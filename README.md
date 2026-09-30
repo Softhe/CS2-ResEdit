@@ -1,161 +1,158 @@
-<div align="center">
-
 # CS2 ResEdit
 
-A safe, native Windows editor for Counter-Strike 2 display settings.
+CS2 ResEdit edits Counter-Strike 2 resolution and aspect settings on Windows. Version 2.0.0 replaces the C# and WinForms application with a Rust application built with egui.
 
-[![Latest release](https://img.shields.io/github/v/release/Softhe/CS2-ResEdit?display_name=tag&sort=semver&style=flat-square)](https://github.com/Softhe/CS2-ResEdit/releases/latest)
-[![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows11&style=flat-square)](#requirements)
-[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&style=flat-square)](#development)
-[![Tests](https://img.shields.io/github/actions/workflow/status/Softhe/CS2-ResEdit/test.yml?branch=main&label=tests&style=flat-square)](https://github.com/Softhe/CS2-ResEdit/actions/workflows/test.yml)
-[![GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-2EA44F?style=flat-square)](LICENSE)
+[Download CS2-ResEdit.exe](https://github.com/Softhe/CS2-ResEdit/releases/latest/download/CS2-ResEdit.exe) · [Release notes](https://github.com/Softhe/CS2-ResEdit/releases/latest) · [SHA-256 checksum](https://github.com/Softhe/CS2-ResEdit/releases/latest/download/CS2-ResEdit.exe.sha256)
 
-### [Download CS2-ResEdit.exe](https://github.com/Softhe/CS2-ResEdit/releases/latest/download/CS2-ResEdit.exe)
+## Requirements
 
-[All releases](https://github.com/Softhe/CS2-ResEdit/releases) ·
-[SHA-256 checksum](https://github.com/Softhe/CS2-ResEdit/releases/latest/download/CS2-ResEdit.exe.sha256)
+- Windows 10 or Windows 11, x64.
+- A Steam installation with a CS2 video configuration, or a manually selected `cs2_video.txt`.
 
-</div>
+The portable executable needs no installer, administrator rights, PowerShell runtime, or separately installed .NET runtime. The application works locally and does not upload your configuration or Steam account information.
 
-<p align="center">
-  <img src="assets/cs2-resedit.png" alt="CS2 ResEdit showing a fixture Steam account and 16:9 display settings" width="1000">
-</p>
+## Use the editor
 
-## About
+1. Close Counter-Strike 2. The game can overwrite its configuration when it exits.
+2. Download and run `CS2-ResEdit.exe`.
+3. Select a Steam account, or choose Browse to open a configuration.
+4. Select the target display, aspect ratio, and resolution.
+5. Review the current and pending values, then choose Apply changes.
 
-CS2 ResEdit finds the local video configuration for each Steam account and changes resolution and aspect ratio without manual VDF editing. Version 1.0 is a portable, self-contained C#/.NET 10 WinForms application with a warm graphite interface, orange accents, and sharp per-monitor high-DPI rendering.
-
-The application runs locally and requires no PowerShell runtime, separate .NET installation, administrator rights, API key, installer, or network connection.
-
-| Capability | Behavior |
-| --- | --- |
-| Steam discovery | Lists local persona names, Account IDs, SteamID64 values, and configuration availability. |
-| Display modes | Detects active displays, prioritizes Windows-supported modes, retains 43 curated presets, and accepts validated custom dimensions. |
-| Recommended presets | Defaults to `1280x960`, `1920x1080`, or `1680x1050` when changing aspect families. |
-| Live preview | Compares current and pending settings and previews the pending display shape. |
-| Safe updates | Preserves encoding, BOM state, line endings, and unrelated VDF content during atomic replacement. |
-| Recovery | Creates timestamped backups by default and supports previewed, rollback-safe restoration. |
-| Local preferences | Remembers the last account and up to five recent valid custom files. |
-| Diagnostics | Copies or exports a privacy-safe support report without identifiers, paths, or configuration contents. |
-
-## Quick start
-
-1. [Download `CS2-ResEdit.exe`](https://github.com/Softhe/CS2-ResEdit/releases/latest/download/CS2-ResEdit.exe).
-2. Close Counter-Strike 2 so the game cannot overwrite the configuration when it exits.
-3. Place the executable anywhere convenient and run it.
-4. Select a discovered Steam account or choose **Browse** to open a `cs2_video.txt`.
-5. Select the target display, aspect family, and resolution, review the pending settings, then choose **Apply changes**.
-
-No installation is required. The usual configuration location is:
+The usual configuration path is:
 
 ```text
 C:\Program Files (x86)\Steam\userdata\<AccountID>\730\local\cfg\cs2_video.txt
 ```
 
-The executable is currently unsigned, so Windows SmartScreen may display a warning. Verify the SHA-256 checksum against the published sidecar before choosing **More info** and **Run anyway**.
+Steam and display discovery run in the background. Refresh scans accounts again. Reload file reads the selected configuration again and replaces pending values with its current settings. Reset discards pending edits without writing to the file.
 
-## Presets and aspect ratios
+Only one editor instance can run per Windows session. `--help` and `--version` show informational dialogs in the release build. Command-line configuration editing is not supported.
 
-Changing the aspect family filters the preset list and selects a common starting resolution:
+## Displays and resolutions
 
-- `4:3 / 5:4` → `1280x960`
-- `16:9` → `1920x1080`
-- `16:10` → `1680x1050`
+The display list shows the Windows-reported monitor model, display ID, current resolution, and primary-display status. For example, a monitor may appear as `ROG PG27AQN · DISPLAY1 · 2560x1440 · Primary`. If Windows cannot provide a monitor name, the editor falls back to the graphics-adapter name.
 
-Windows-supported modes for the selected target display appear first. Every curated preset remains available afterward and is marked when Windows did not report it. The catalog ranges from low-resolution modes such as `640x480` and `800x600` through 4K-class modes. Choose **Custom resolution** to enter exact dimensions within the validated range.
+Selecting a display changes resolution-availability guidance. It does not switch the desktop resolution or change CS2's monitor-selection fields.
 
-The target display affects availability guidance only; the editor does not modify CS2 monitor-selection fields.
+Windows-reported modes appear first, followed by the remaining curated presets for the selected aspect family. An unreported mode remains selectable; that label is not a guarantee that the monitor or game supports it.
 
-## Privacy-safe diagnostics
+Changing the aspect family selects its recommended preset:
 
-Choose **Diagnostics** to review a local support summary. Use **Copy** for the readable report or **Export JSON** for a versioned machine-readable report.
+| Aspect family | Recommended resolution |
+| --- | --- |
+| 4:3 / 5:4 | 1280x960 |
+| 16:9 | 1920x1080 |
+| 16:10 | 1680x1050 |
 
-Reports include the app/OS architecture, display and mode counts, Steam discovery counts, and configuration format status. They exclude Steam names and identifiers, file paths, configuration contents, and preferences.
+The catalog contains 43 presets. Choose Custom resolution to enter a width from 320 to 32768 and a height from 200 to 32768. The shared 16:9 preview canvas shows how narrower aspect ratios compare. It does not predict the game's scaling or stretching behavior.
 
-## Back up and restore
+## Themes and mouse wheel
 
-The **Create a timestamped backup before applying** option is enabled by default. Each successful change creates a backup beside the active configuration.
+Choose Theme in the header. The editor saves your choice for the next launch.
 
-Choose **Manage backups** to inspect available editor backups and restore one. A restore is validated before use and creates a rollback backup of the current file first, so the operation can be reversed.
+| Theme | UI colors | Running-window icons |
+| --- | --- | --- |
+| Glacier, the default | Dark blue and cyan | Cyan |
+| Paper | Light cream and teal | White |
+| Monolith | Dark graphite and lime | Lime |
+| Canopy | Dark forest green and jade | Jade |
 
-## Safety, backups, and privacy
+The title-bar and running taskbar icons follow the theme. The executable's File Explorer icon remains static.
 
-- The editor validates the required resolution fields before modifying a file and remains compatible with current files that omit the retired legacy aspect-mode field.
-- Updates are prepared in memory, written to a temporary file, and atomically replace the active configuration.
-- The original encoding (UTF-8 or UTF-16), BOM state, and CRLF/LF line endings are preserved.
-- Backups use `cs2_video.txt.<yyyyMMdd-HHmmss>.bak`; the newest five recognized editor backups are retained.
-- Unrelated `.bak` files are never pruned.
-- Steam names and identifiers are read locally and are never uploaded.
-- Preferences contain no credentials and remain at:
+Hover over any closed dropdown and scroll down to select the next entry or up to select the previous entry. Selection stops at either end. This applies to accounts, displays, presets, aspect ratios, and themes. Open menus retain normal scrolling.
+
+The custom width and height fields also accept wheel input. Scroll up to increase a value or down to decrease it. Adjustments stay within the allowed dimension range.
+
+## File changes and recovery
+
+Apply validates the required fields, prepares the update in memory, and replaces the configuration through a temporary file in the same directory. It preserves UTF-8 or UTF-16 encoding, byte-order marks, line endings, and unrelated values. Files without the retired legacy aspect-mode field remain supported.
+
+If another program changes the loaded file, Apply and Restore stop and report the difference. Choose Reload file, review the new values, then make your change again. These checks reduce the risk of overwriting external edits, but they cannot lock out every write from another process.
+
+Create a timestamped backup before applying is enabled by default. Backups are stored beside the configuration with names such as `cs2_video.txt.20260930-120000.bak`. The editor retains the newest five recognized backups. It does not delete unrelated `.bak` files.
+
+Choose Manage backups to inspect and restore a backup. Restoration validates the backup and creates a rollback backup of the current file first. Keep CS2 closed during restoration as well as during Apply.
+
+## Preferences and upgrading from 1.1.0
+
+Close the old application and replace its executable with version 2.0.0. Existing CS2 files and recognized editor backups remain usable. No installation or configuration conversion is required.
+
+Preferences are stored at:
 
 ```text
 %LOCALAPPDATA%\Softhe\CS2-ResEdit\v1\settings.json
 ```
 
-Version 1 starts with fresh preferences at this path. Preference files from other product names or unversioned folders are neither imported nor modified.
+The `v1` directory names the preference schema, not the application release. Version 2.0.0 keeps that schema and adds an optional theme field. It remembers the last account, selected configuration, theme, and up to five recent valid files. A missing or unknown theme defaults to Glacier.
+
+Preference files under other product names or unversioned directories are not imported or modified. Preferences contain local account IDs and file paths, but no credentials.
+
+## Diagnostics
+
+Choose Diagnostics to view a support report. Copy copies the readable summary; Export JSON saves the structured report.
+
+Reports include application and operating-system details, display and mode counts, Steam discovery counts, and configuration-format status. They exclude account names and identifiers, paths, configuration contents, and preference values. Exporting a report does not send it anywhere.
 
 ## Verify the download
 
-Download the executable and checksum into the same directory, then run:
+The release is unsigned. Windows SmartScreen may warn when you run it. Download the executable and checksum sidecar into the same folder, then run this in PowerShell:
 
 ```powershell
-$expected = (Get-Content .\CS2-ResEdit.exe.sha256).Split()[0]
+$expected = (Get-Content .\CS2-ResEdit.exe.sha256 -Raw).Split()[0]
 $actual = (Get-FileHash .\CS2-ResEdit.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-$actual -eq $expected
+if ($actual -ne $expected) { throw 'The executable checksum does not match.' }
+'Checksum verified.'
 ```
 
-The result should be `True`.
-
-Checksum verification confirms that the downloaded file matches the GitHub release asset. Because the executable is unsigned, it does not provide publisher identity verification.
-
-## Requirements
-
-- Windows 10 or Windows 11, x64
-- Counter-Strike 2 installed through Steam, or a valid `cs2_video.txt`
+A matching checksum confirms that the file matches the release asset. It does not verify a publisher signature.
 
 ## Troubleshooting
 
-### No Steam account appears
+### No account appears
 
-Choose **Refresh** after Steam has been started at least once. If the account still does not appear, choose **Browse** and open its `cs2_video.txt` directly.
+Start Steam at least once, then choose Refresh. If discovery still fails, use Browse to open the account's configuration directly.
 
 ### Apply changes is disabled
 
-The button remains disabled until the pending settings differ from the current file and both custom dimensions are valid. Select another preset or enter valid width and height values.
+Select a valid configuration and change a setting. Apply remains disabled when pending values match the loaded file or entered dimensions are invalid.
 
-### The game restores the previous resolution
+### The game restores previous settings
 
-Close Counter-Strike 2 before applying a change. The game can overwrite `cs2_video.txt` with its in-memory settings when it exits.
+Close CS2 before applying changes. A running game may save its in-memory settings over the edited file when it exits.
 
 ### A change needs to be undone
 
-Choose **Manage backups**, select the appropriate timestamped backup, preview it, and restore it. The editor creates an additional rollback backup before restoration.
+Open Manage backups, inspect a backup's values, and restore it. Reset only discards changes that have not been applied.
 
-## Current limitations
+### Two monitors have the same model name
 
-- Windows 10/11 x64 only
-- GUI-only; command-line automation is not included
-- Unsigned executable; SmartScreen may warn on first launch
-- Local Steam installations and manually selected configuration files only
+Use the display ID and primary-display label to distinguish them. Model names depend on what Windows and the display driver report.
 
-## Development
+## Build from source
 
-Install the .NET SDK selected by `global.json`, then run:
+Install rustup and the toolchain specified in `rust-toolchain.toml`. From the repository root, run:
 
 ```powershell
-dotnet restore CS2-ResEdit.slnx --locked-mode
-dotnet build CS2-ResEdit.slnx -c Release --no-restore
-dotnet test CS2-ResEdit.slnx -c Release --no-build --no-restore
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 .\build\Publish.ps1
 ```
 
-The solution separates the WinForms UI, reusable configuration/Steam/preferences core, and xUnit tests. `build\Publish.ps1` runs the tests and produces:
+The workspace has two crates:
 
-- `dist\CS2-ResEdit.exe`
-- `dist\CS2-ResEdit.exe.sha256`
+- `crates/core` contains configuration editing, backups, Steam discovery, display discovery, preferences, and diagnostics.
+- `crates/app` contains the egui interface, themes, and native window integration.
 
-Pushing a tag that matches the application version runs the test workflow and publishes both verified assets as a GitHub release.
+The publish script stages the Windows x64 executable and checksum before replacing the files in `dist`. Close a running copy of the destination executable before publishing.
+
+Release assets are `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. CI checks formatting, lint, and tests on Windows and Linux, builds on Windows, and smoke-tests the packaged GUI. Linux checks cover core behavior and conditional compilation; there is no supported Linux release.
+
+A version tag must match the workspace version and the heading in `RELEASE_NOTES.md`. The release workflow uploads the tested Windows assets. `build/Sign-Release.ps1` supports optional manual Authenticode signing when a trusted publisher certificate is available. The current release process does not sign the executable.
+
+See [the changelog](CHANGELOG.md), [the roadmap](ROADMAP.md), and the dated [code audit](CODE_AUDIT_2026-09-29.md) and [codebase analysis](PROJECT-ANALYSIS-2026-09-29.md) for change history and remaining work.
 
 ## License
 
-CS2 ResEdit is free software licensed under the [GNU General Public License v3.0](LICENSE).
+CS2 ResEdit is licensed under [GPL-3.0-only](LICENSE).

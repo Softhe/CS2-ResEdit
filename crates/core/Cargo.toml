@@ -1,0 +1,29 @@
+[package]
+name = "cs2_resedit_core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Reusable Steam / CS2 video configuration core for CS2 ResEdit"
+
+[lib]
+name = "cs2_resedit_core"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.2"
+os_info = "3"
+windows-sys = { version = "0.61", features = ["Win32_Devices_Display", "Win32_Foundation"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

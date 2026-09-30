@@ -1,26 +1,34 @@
 # Changelog
 
-All notable changes to CS2 ResEdit are documented here.
+## 2.0.0 - 2026-09-30
+
+- Rewrote the C# and WinForms application in Rust with an egui interface.
+- Replaced the .NET solution and build process with a Cargo workspace.
+- Added four saved themes: Glacier, Paper, Monolith, and Canopy. Glacier is the default; Paper uses white running-window icons.
+- Made title-bar and taskbar icons follow the theme.
+- Added bounded wheel selection to all dropdowns and wheel adjustment to custom dimensions.
+- Added Windows-reported monitor models and display IDs, with a graphics-adapter fallback.
+- Reduced unused window space, aligned card heights, bounded long labels, and made startup sizing respect the work area and DPI.
+- Fixed dropdown clicks that toggled menus in both the measurement and visible passes.
+- Added background discovery, scan timeout notices, degraded-discovery warnings, and named accessible controls.
+- Preserved the loaded configuration and pending edits when navigation fails or discovery refreshes the same file.
+- Added last-configuration restoration and backward-compatible theme preferences.
+- Rejected malformed Unicode and deeply nested KeyValues input, reserved recovery files without overwriting collisions, and guarded rollback against concurrent edits.
+- Expanded regression tests for file preservation, recovery, state transitions, layout, pointer input, and native icons.
+- Staged executable and checksum publication together, pinned the Rust toolchain, and updated CI.
+- Rewrote the documentation for the Rust release.
 
 ## 1.1.0 - 2026-09-23
 
-- Hardened the VDF parser with nesting, token-count, and length caps; unknown escapes are preserved and unsupported directives are rejected.
-- Replaced the fail-open game-running check with a tri-state probe that warns and confirms before applying when the status is unknown.
-- Made preset population resilient to odd display-driver modes and hardened custom resolution input (length limit, digit-only entry, accessible descriptions).
-- Added validation for custom Steam locations and preference paths with status warnings instead of silent empty results; corrupt-preference warnings no longer leak paths.
-- Made Steam account discovery cancelable, added a single-instance guard, and added `--help`/`--version` handling.
-- Reworked the backup dialog with friendly names, newest-first preselection, and a refresh action.
-- Replaced the disk-conflict Yes/No prompt with an explicit Reload/Overwrite/Cancel choice, size-plus-timestamp change detection, and an unreadable-file warning.
-- Unified resolution bounds handling and aligned aspect-tolerance checks; out-of-range loaded settings show a repair hint instead of blocking.
-- Hardsized configuration reads with streaming size caps, friendlier encoding errors, and retention cleanup that can no longer roll back a successful apply.
-- Improved display detection fallbacks, richer diagnostics error categories, and keyboard-shortcut tooltips.
+- Hardened configuration parsing and handling of files changed on disk.
+- Improved backup naming, Steam discovery, display detection, and custom resolution entry.
+- Added a single-instance guard and informational `--help` and `--version` commands.
 
 ## 1.0.0 - 2026-08-04
 
-- Initial public release of the self-contained Windows application.
-- Added local Steam account and CS2 configuration discovery.
-- Added target-display awareness, curated presets, aspect-family defaults, and validated custom dimensions.
-- Added a fixed 16:9 preview canvas that makes narrower aspect ratios directly comparable.
-- Added atomic configuration updates with encoding and line-ending preservation.
-- Added timestamped backups, rollback-safe restoration, and privacy-safe diagnostics.
-- Added a warm-graphite dark interface with orange accents, per-monitor DPI support, keyboard navigation, and accessible control names.
+- Released the C# Windows application.
+- Added local Steam discovery, configuration selection, display guidance, presets, and custom dimensions.
+- Added a shared 16:9 preview canvas.
+- Added atomic updates, encoding and line-ending preservation, backups, and rollback-safe restoration.
+- Added local diagnostics that omit identifiers, paths, and configuration contents.
+- Added the graphite and orange interface, DPI support, keyboard navigation, and accessible control names.

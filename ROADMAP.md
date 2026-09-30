@@ -1,10 +1,20 @@
-# Project roadmap
+# Roadmap
 
-CS2 ResEdit 1.0 provides the complete supported GUI workflow described in the [README](README.md). Future work will be evaluated without changing the safety guarantees of configuration updates and backup restoration.
+Version 2.0.0 replaces the C# application with Rust. Further work should preserve the file-format handling, backup behavior, and external-change checks described in the [README](README.md).
 
-## Future candidates
+## Next priorities
 
-- Add automation-friendly command-line editing and account listing.
-- Add Windows ARM64 release assets.
-- Obtain a trusted Authenticode certificate and enforce signatures in CI.
-- Add localization-ready UI resources.
+- Add repeatable Windows UI checks at 1280x960 with 100%, 125%, and 150% scaling. Geometry tests do not prove that native text, chrome, and taskbar rendering look correct.
+- Separate configuration navigation and edit state from egui rendering. Keep failed loads transactional and test transitions through the same interface the UI uses.
+- Separate scan notices from apply and restore results so a refresh cannot hide an important file-operation message.
+- Add a dependency advisory check with a recorded tool version and a policy for exceptions.
+
+## Possible later work
+
+- Command-line account listing and configuration editing.
+- Windows ARM64 builds.
+- Authenticode signing with a trusted publisher certificate.
+- UI resources that support localization.
+- Generation-tagged scan requests and bounded worker shutdown.
+
+These are candidates, not commitments for a particular release. Linux CI checks core behavior and platform-specific compilation; it does not establish support for a Linux desktop release.

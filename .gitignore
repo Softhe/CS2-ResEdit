@@ -1,7 +1,6 @@
 *.bak
 .cs2-video-*.tmp
+.cs2_video.txt.*.tmp
 .codex-*
-**/bin/
-**/obj/
+/target/
 dist*/
-TestResults/

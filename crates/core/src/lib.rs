@@ -1,0 +1,20 @@
+pub mod diagnostics;
+pub mod display;
+pub mod error;
+pub mod fsutil;
+pub mod models;
+pub mod preferences;
+pub mod resolution_catalog;
+pub mod steam;
+pub mod valve_keyvalues;
+pub mod video_config;
+
+pub use diagnostics::DiagnosticService;
+pub use display::{DisplayModeProvider, DisplayProvider};
+pub use error::CoreError;
+pub use models::*;
+pub use preferences::PreferencesService;
+pub use resolution_catalog::ResolutionCatalog;
+pub use steam::SteamService;
+pub use valve_keyvalues::ValveKeyValues;
+pub use video_config::{VideoConfigService, VideoConfigSnapshot};

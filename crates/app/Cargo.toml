@@ -1,0 +1,38 @@
+[package]
+name = "cs2_resedit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "CS2 ResEdit — native Windows editor for Counter-Strike 2 display settings"
+
+[[bin]]
+name = "CS2-ResEdit"
+path = "src/main.rs"
+
+[dependencies]
+cs2_resedit_core = { path = "../core" }
+eframe = { version = "0.32", default-features = false, features = ["accesskit", "default_fonts", "glow", "x11", "wayland"] }
+egui = "0.32"
+rfd = "0.15"
+chrono = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+
+# Direct winit dependency so feature unification enables the Linux
+# backends (eframe itself depends on winit with default-features = false).
+# Windows needs no extras, so it is only pulled in off-Windows.
+[target.'cfg(not(windows))'.dependencies]
+winit = { version = "0.30", default-features = true }
+
+[build-dependencies]
+tauri-winres = "0.3"
+
+[dev-dependencies]
+tempfile = { workspace = true }

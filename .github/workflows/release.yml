@@ -23,22 +23,40 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up .NET 10
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+      - name: Set up Rust for version validation
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          dotnet-version: 10.0.302
+          toolchain: '1.98.0'
+          components: rustfmt, clippy
 
       - name: Validate tag version
         shell: pwsh
         run: |
-          $version = (dotnet msbuild src/CS2ResEdit.Editor/CS2ResEdit.Editor.csproj -getProperty:Version).Trim()
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages `
+            | Where-Object { $_.name -eq 'cs2_resedit' } | Select-Object -ExpandProperty version
           if ($env:GITHUB_REF_NAME -ne "v$version") {
             throw "Tag '$env:GITHUB_REF_NAME' does not match application version '$version'."
           }
+          $heading = Get-Content ./RELEASE_NOTES.md -TotalCount 1
+          if ($heading -ne "# CS2 ResEdit $env:GITHUB_REF_NAME") {
+            throw "Release notes heading must be '# CS2 ResEdit $env:GITHUB_REF_NAME'."
+          }
+          if ($heading -match '(?i)\(draft\)\s*$') {
+            throw 'The release notes heading is still marked as draft. Finalize it before publishing.'
+          }
 
-      - name: Build release assets
+      - name: Download tested release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cs2-resedit-${{ github.sha }}
+          path: ./dist
+
+      - name: Verify downloaded asset checksum
         shell: pwsh
-        run: ./build/Publish.ps1 -OutputDirectory ./dist
+        run: |
+          $expected = (Get-Content ./dist/CS2-ResEdit.exe.sha256 -Raw).Split()[0]
+          $actual = (Get-FileHash ./dist/CS2-ResEdit.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'Tested release asset checksum mismatch.' }
 
       - name: Publish GitHub release
         shell: pwsh
