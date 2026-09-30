@@ -47,7 +47,8 @@ jobs:
         env:
           CS2_RESEDIT_SETTINGS_PATH: ${{ runner.temp }}\cs2-resedit-smoke-settings.json
         run: |
-          $process = Start-Process ./dist/CS2-ResEdit.exe -PassThru
+          $stderr = Join-Path $env:RUNNER_TEMP 'cs2-resedit-smoke-stderr.txt'
+          $process = Start-Process ./dist/CS2-ResEdit.exe -PassThru -RedirectStandardError $stderr
           $second = $null
           try {
             $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -55,7 +56,10 @@ jobs:
               Start-Sleep -Milliseconds 250
               $process.Refresh()
             } until ($process.HasExited -or $process.MainWindowHandle -ne 0 -or [DateTime]::UtcNow -ge $deadline)
-            if ($process.HasExited) { throw "Packaged application exited with code $($process.ExitCode)." }
+            if ($process.HasExited) {
+              if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr }
+              throw "Packaged application exited with code $($process.ExitCode)."
+            }
             if ($process.MainWindowHandle -eq 0) { throw 'Packaged application did not create its main window.' }
             $second = Start-Process ./dist/CS2-ResEdit.exe -PassThru
             $deadline = [DateTime]::UtcNow.AddSeconds(10)
