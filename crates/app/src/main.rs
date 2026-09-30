@@ -91,6 +91,7 @@ fn main() {
     }
 }
 
+#[cfg(any(windows, test))]
 fn fit_inner_size(work_width: f32, work_height: f32, dpi: f32) -> [f32; 2] {
     let scale = (dpi / 96.0).max(1.0);
     // Leave room for the non-client border and title bar inside the work area.
