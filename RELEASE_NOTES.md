@@ -27,7 +27,7 @@ Preferences remain in `%LOCALAPPDATA%\Softhe\CS2-ResEdit\v1\settings.json`. The 
 
 ## Download and verification
 
-Download `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. This release supports Windows 10 and Windows 11, x64. No installer is required.
+Download `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. This release supports Windows 10 and Windows 11, x64, with a graphics driver that supports OpenGL 2.0 or later. No installer is required.
 
 The executable is unsigned, so SmartScreen may warn. Compare its SHA-256 hash with the sidecar before running it. A matching checksum verifies file contents, not publisher identity.
 

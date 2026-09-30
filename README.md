@@ -7,6 +7,7 @@ CS2 ResEdit edits Counter-Strike 2 resolution and aspect settings on Windows. Ve
 ## Requirements
 
 - Windows 10 or Windows 11, x64.
+- A graphics driver that supports OpenGL 2.0 or later.
 - A Steam installation with a CS2 video configuration, or a manually selected `cs2_video.txt`.
 
 The portable executable needs no installer, administrator rights, PowerShell runtime, or separately installed .NET runtime. The application works locally and does not upload your configuration or Steam account information.
@@ -147,7 +148,7 @@ The workspace has two crates:
 
 The publish script stages the Windows x64 executable and checksum before replacing the files in `dist`. Close a running copy of the destination executable before publishing.
 
-Release assets are `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. CI checks formatting, lint, and tests on Windows and Linux, builds on Windows, and smoke-tests the packaged GUI. Linux checks cover core behavior and conditional compilation; there is no supported Linux release.
+Release assets are `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. CI checks formatting, lint, and tests on Windows and Linux, builds on Windows, and smoke-tests an identical copy of the packaged GUI with a pinned software OpenGL renderer. That renderer is a CI dependency and is not included in the release. Linux checks cover core behavior and conditional compilation; there is no supported Linux release.
 
 A version tag must match the workspace version and the heading in `RELEASE_NOTES.md`. The release workflow uploads the tested Windows assets. `build/Sign-Release.ps1` supports optional manual Authenticode signing when a trusted publisher certificate is available. The current release process does not sign the executable.
 
