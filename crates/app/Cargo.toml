@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 cs2_resedit_core = { path = "../core" }
-eframe = { version = "0.32", default-features = false, features = ["accesskit", "default_fonts", "glow", "x11", "wayland"] }
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "x11", "wayland"] }
 egui = "0.32"
 rfd = "0.15"
 chrono = { workspace = true }
