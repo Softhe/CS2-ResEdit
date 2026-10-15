@@ -21,7 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-registry = "0.2"
+windows-registry = "0.100"
 os_info = "3"
 windows-sys = { version = "0.61", features = ["Win32_Devices_Display", "Win32_Foundation"] }
 
