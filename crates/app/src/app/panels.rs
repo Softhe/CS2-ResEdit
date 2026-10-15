@@ -1,23 +1,6 @@
 use super::*;
 
 impl ResEditApp {
-    fn select_account(&mut self, index: usize) {
-        let has_config = self.accounts[index].has_config;
-        let path = PathBuf::from(&self.accounts[index].config_path);
-        if has_config {
-            let previous = self.selected_account.replace(index);
-            if !self.load_path(Some(path)) {
-                self.selected_account = previous;
-            }
-        } else {
-            self.selected_account = Some(index);
-            self.load_path(None);
-            self.set_status(
-                "This account does not have a CS2 video configuration.",
-                true,
-            );
-        }
-    }
     pub(super) fn settings_card(&mut self, ui: &mut egui::Ui, min_height: f32) -> egui::Rect {
         card_frame(ui, self.palette).show(ui, |ui| {
             ui.set_min_height((min_height - 22.0).max(0.0));
@@ -92,6 +75,12 @@ impl ResEditApp {
             ui.label(egui::RichText::new("TARGET DISPLAY").small().strong());
             if self.displays.is_empty() {
                 ui.label(display_label);
+                ui.label(
+                    egui::RichText::new(
+                        "Display detection only guides preset availability; values still apply to the game config.",
+                    )
+                    .small(),
+                );
             } else {
                 let display_combo = egui::ComboBox::from_id_salt("Target display")
                     .selected_text(display_label.clone())
@@ -176,28 +165,60 @@ impl ResEditApp {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         let width_heading = ui.label(egui::RichText::new("CUSTOM WIDTH").small().strong());
-                        let response = ui
-                            .add(
-                                egui::TextEdit::singleline(&mut self.custom_width)
-                                    .hint_text("Custom width")
-                                    .desired_width(160.0),
-                            ).labelled_by(width_heading.id);
-                        if response.changed() || wheel_dimension(&response, &mut self.custom_width, 320)
-                        {
-                            self.pending_changed();
+                        let mut stepped = false;
+                        ui.horizontal(|ui| {
+                            if ui.small_button("-").on_hover_text("Decrease width").clicked() {
+                                self.custom_width = step_dim(&self.custom_width, -1, 320);
+                                stepped = true;
+                            }
+                            let response = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.custom_width)
+                                        .hint_text("320 – 32768")
+                                        .desired_width(112.0),
+                                ).labelled_by(width_heading.id)
+                                .on_hover_text("Width in pixels (320 – 32768). Scroll to adjust.");
+                            named_text(&response, "Custom width", ui.is_enabled());
+                            if ui.small_button("+").on_hover_text("Increase width").clicked() {
+                                self.custom_width = step_dim(&self.custom_width, 1, 320);
+                                stepped = true;
+                            }
+                            if response.changed() || stepped || wheel_dimension(&response, &mut self.custom_width, 320)
+                            {
+                                self.pending_changed();
+                            }
+                        });
+                        if let Some(error) = dim_field_error(&self.custom_width, 320, 32768) {
+                            ui.label(egui::RichText::new(error).small().color(self.palette.warning));
                         }
                     });
                     ui.vertical(|ui| {
                         let height_heading = ui.label(egui::RichText::new("CUSTOM HEIGHT").small().strong());
-                        let response = ui
-                            .add(
-                                egui::TextEdit::singleline(&mut self.custom_height)
-                                    .hint_text("Custom height")
-                                    .desired_width(160.0),
-                            ).labelled_by(height_heading.id);
-                        if response.changed() || wheel_dimension(&response, &mut self.custom_height, 200)
-                        {
-                            self.pending_changed();
+                        let mut stepped = false;
+                        ui.horizontal(|ui| {
+                            if ui.small_button("-").on_hover_text("Decrease height").clicked() {
+                                self.custom_height = step_dim(&self.custom_height, -1, 200);
+                                stepped = true;
+                            }
+                            let response = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.custom_height)
+                                        .hint_text("200 – 32768")
+                                        .desired_width(112.0),
+                                ).labelled_by(height_heading.id)
+                                .on_hover_text("Height in pixels (200 – 32768). Scroll to adjust.");
+                            named_text(&response, "Custom height", ui.is_enabled());
+                            if ui.small_button("+").on_hover_text("Increase height").clicked() {
+                                self.custom_height = step_dim(&self.custom_height, 1, 200);
+                                stepped = true;
+                            }
+                            if response.changed() || stepped || wheel_dimension(&response, &mut self.custom_height, 200)
+                            {
+                                self.pending_changed();
+                            }
+                        });
+                        if let Some(error) = dim_field_error(&self.custom_height, 200, 32768) {
+                            ui.label(egui::RichText::new(error).small().color(self.palette.warning));
                         }
                     });
                 });
@@ -243,7 +264,10 @@ impl ResEditApp {
             }
             if self.original.is_none() {
                 ui.label(egui::RichText::new("Select a configuration to preview changes.").small());
-            } else if self.pending.is_none() {
+                if ui.button("Browse for cs2_video.txt").clicked() {
+                    self.browse();
+                }
+            } else if matches!(self.edit, EditState::Invalid) {
                 ui.label(
                     egui::RichText::new("Enter a valid resolution to preview changes.")
                         .small()
@@ -255,6 +279,13 @@ impl ResEditApp {
                         .small()
                         .color(palette.accent),
                 );
+                if !self.create_backup {
+                    ui.label(
+                        egui::RichText::new("• No backup will be created")
+                            .small()
+                            .color(palette.warning),
+                    );
+                }
             } else {
                 ui.label(
                     egui::RichText::new("✔ In sync with file")
@@ -281,7 +312,9 @@ impl ResEditApp {
     }
 
     pub(super) fn aspect_preview(&self, ui: &mut egui::Ui, height: Option<f32>) -> f32 {
-        let resolution = self.pending;
+        // Fall back to the last valid shape while typing passes through
+        // intermediate invalid states; Apply still requires `edit`.
+        let resolution = self.edit.resolution().or(self.preview_fallback);
         // Reserve room for the caption and actions below the preview.
         let preview_height =
             height.unwrap_or_else(|| (ui.available_height() - 90.0).clamp(80.0, 220.0));
@@ -342,6 +375,35 @@ fn named_combo(response: &egui::Response, name: &'static str, enabled: bool) {
     // In egui 0.32, ComboBox::from_id_salt registers an empty WidgetInfo label.
     // Labelled-by relations alone are not surfaced as a name by Windows UIA.
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, enabled, name));
+}
+
+fn named_text(response: &egui::Response, name: &'static str, enabled: bool) {
+    // Same UIA issue as combos: force an accessible name on custom fields.
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, enabled, name));
+}
+
+/// Per-field dimension error for custom width/height inputs.
+/// Returns `None` when the value parses and is within `[min, max]`.
+fn dim_field_error(text: &str, min: i32, max: i32) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Some("Required".to_string());
+    }
+    match trimmed.parse::<i32>() {
+        Ok(value) if (min..=max).contains(&value) => None,
+        Ok(_) => Some(format!("{min}–{max}")),
+        Err(_) => Some("Enter a number".to_string()),
+    }
+}
+
+/// Step a dimension field by `delta`, clamping to `[min, 32768]`.
+/// Unparseable input restarts from the nearer bound.
+fn step_dim(text: &str, delta: i32, min: i32) -> String {
+    match text.trim().parse::<i32>() {
+        Ok(value) => value.saturating_add(delta).clamp(min, 32768).to_string(),
+        Err(_) if delta >= 0 => min.to_string(),
+        Err(_) => 32768.to_string(),
+    }
 }
 
 fn wheel_dimension(response: &egui::Response, text: &mut String, minimum: usize) -> bool {
@@ -685,5 +747,44 @@ mod tests {
         for name in names {
             assert!(actual.contains(&name), "missing accessible name: {name}");
         }
+    }
+
+    #[test]
+    fn custom_dimension_fields_report_per_field_errors() {
+        assert_eq!(dim_field_error("1920", 320, 32768), None);
+        assert_eq!(dim_field_error(" 1080 ", 200, 32768), None);
+        assert_eq!(
+            dim_field_error("", 320, 32768),
+            Some("Required".to_string())
+        );
+        assert_eq!(
+            dim_field_error("abc", 320, 32768),
+            Some("Enter a number".to_string())
+        );
+        assert_eq!(
+            dim_field_error("100", 320, 32768),
+            Some("320–32768".to_string())
+        );
+        assert_eq!(
+            dim_field_error("100", 200, 32768),
+            Some("200–32768".to_string())
+        );
+        assert_eq!(dim_field_error("32768", 320, 32768), None);
+        assert_eq!(
+            dim_field_error("32769", 320, 32768),
+            Some("320–32768".to_string())
+        );
+    }
+
+    #[test]
+    fn dimension_steppers_clamp_and_recover_from_invalid_input() {
+        assert_eq!(step_dim("2147483647", 1, 320), "32768");
+        assert_eq!(step_dim("-2147483648", -1, 200), "200");
+        assert_eq!(step_dim("1920", 1, 320), "1921");
+        assert_eq!(step_dim("1920", -1, 320), "1919");
+        assert_eq!(step_dim("320", -1, 320), "320");
+        assert_eq!(step_dim("32768", 1, 320), "32768");
+        assert_eq!(step_dim("", 1, 320), "320");
+        assert_eq!(step_dim("abc", 1, 200), "200");
     }
 }

@@ -532,7 +532,8 @@ fn rejects_invalid_dimensions() {
 #[test]
 fn preset_catalog_is_expanded_and_has_unique_dimensions() {
     let presets = ResolutionCatalog::presets();
-    assert!(presets.len() >= 40, "got {}", presets.len());
+    // README documents the exact catalog size; drift must update both.
+    assert_eq!(presets.len(), 43, "got {}", presets.len());
     let unique: HashSet<(i32, i32)> = presets.iter().map(|p| (p.width, p.height)).collect();
     assert_eq!(unique.len(), presets.len());
 }
@@ -911,10 +912,21 @@ fn diagnostic_report_is_versioned_and_privacy_safe() {
     let json = DiagnosticService::to_json(&report);
     let summary = DiagnosticService::to_summary(&report);
 
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(report.schema_version, 2);
     assert_eq!(report.configuration_status, "Valid");
     assert_eq!(report.configuration_line_ending.as_deref(), Some("CRLF"));
-    assert!(summary.contains("1.0.0"));
+    assert_eq!(report.backup_count, 0);
+    assert!(!report.high_contrast);
+    assert!(report.runtime_description.starts_with("Rust "));
+    // Wire-format guard: new privacy-safe fields must stay serialized.
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    assert_eq!(value["schema_version"], 2);
+    assert!(value.get("runtime_description").is_some());
+    assert!(value.get("high_contrast").is_some());
+    assert!(value.get("backup_count").is_some());
+    assert!(summary.contains("Runtime: Rust "));
+    assert!(summary.contains("High contrast: off"));
+    assert!(summary.contains("Backups: 0"));
     let lowered = json.to_lowercase();
     assert!(!lowered.contains(&path.to_string_lossy().to_lowercase()));
     assert!(!lowered.contains("personal-account"));
@@ -943,6 +955,31 @@ fn diagnostic_report_sanitizes_configuration_failure() {
 }
 
 #[test]
+fn diagnostic_report_counts_backups_and_reports_high_contrast() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cs2_video.txt");
+    fs::write(
+        &path,
+        "\"setting.defaultres\" \"1280\"\n\"setting.defaultresheight\" \"960\"\n\"setting.aspectratiomode\" \"0\"\n",
+    )
+    .expect("write");
+    let configs = service();
+    let resolution = ResolutionCatalog::parse("1920x1080", Some(1)).expect("preset");
+    configs.update(&path, &resolution, true).expect("backup");
+    let report =
+        DiagnosticService::create_with_options(&configs, "2.0.0", &[], 1, 1, Some(&path), true);
+    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.backup_count, 1);
+    assert!(report.high_contrast);
+    let summary = DiagnosticService::to_summary(&report);
+    assert!(summary.contains("High contrast: on"));
+    assert!(summary.contains("Backups: 1"));
+    // Privacy: backup count is a number only, no backup paths leak.
+    let json = DiagnosticService::to_json(&report);
+    assert!(!json.contains(".bak"));
+}
+
+#[test]
 fn display_models_expose_neutral_labels_and_unique_modes() {
     let display = DisplayInfo {
         device_name: "DISPLAY1".to_string(),
@@ -957,4 +994,64 @@ fn display_models_expose_neutral_labels_and_unique_modes() {
     };
     assert!(display.label().contains("Primary"));
     assert_eq!(display.modes[1].display(), "1920x1080");
+}
+
+#[test]
+fn core_error_exposes_io_source() {
+    use std::error::Error;
+    let err = CoreError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"));
+    assert!(err.source().is_some());
+    let data = CoreError::InvalidData("bad".to_string());
+    assert!(data.source().is_none());
+}
+
+#[test]
+fn save_preserves_last_config_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let settings = dir.path().join("settings.json");
+    let config = dir.path().join("cs2_video.txt");
+    fs::write(
+        &config,
+        "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
+    )
+    .expect("write");
+    let prefs = PreferencesService::new(service());
+    let saved = prefs.save_selection(Some("123"), Some(&config), &[], Some(&settings));
+    assert_eq!(
+        saved.last_config_path.as_deref(),
+        Some(config.to_string_lossy().as_ref())
+    );
+    let kept = prefs.save(Some("123"), &[], Some(&settings));
+    assert_eq!(kept.last_config_path, saved.last_config_path);
+}
+
+#[test]
+fn display_label_reports_unknown_dimensions() {
+    let display = DisplayInfo {
+        device_name: "DISPLAY1".to_string(),
+        friendly_name: "Monitor".to_string(),
+        is_primary: false,
+        current_width: 0,
+        current_height: 0,
+        modes: vec![],
+    };
+    assert!(display.label().contains("unknown"));
+    assert!(!display.label().contains("0x0"));
+}
+
+#[test]
+fn tiny_utf8_files_are_not_misdecoded_as_utf16() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cs2_video.txt");
+    // 4-byte valid UTF-8 must not be treated as UTF-16 (old threshold was 0).
+    fs::write(&path, b"abcd").expect("write");
+    let err = service().read(&path).expect_err("not a config");
+    assert!(matches!(err, CoreError::InvalidData(_)));
+    // And a tiny invalid-UTF-8 file reports UTF-8, not UTF-16.
+    fs::write(&path, [0x61, 0x62, 0x63, 0xFF]).expect("write");
+    let err = service().read(&path).expect_err("invalid");
+    assert_eq!(
+        err.to_string(),
+        "The configuration is not valid UTF-8 text."
+    );
 }

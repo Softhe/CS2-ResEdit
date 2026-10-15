@@ -31,7 +31,14 @@ impl fmt::Display for CoreError {
     }
 }
 
-impl std::error::Error for CoreError {}
+impl std::error::Error for CoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 impl From<io::Error> for CoreError {
     fn from(err: io::Error) -> Self {

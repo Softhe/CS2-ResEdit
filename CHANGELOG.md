@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Restored diagnostics schema v2 with runtime description, high-contrast state, and recognized backup count. The report stays privacy-safe: counts and booleans only.
+- Kept the preferences-load warning visible across the first configuration load instead of discarding it on save.
+- Made footer operation results sticky: background scans and keystrokes no longer overwrite apply/restore failures, and account refresh confirmations survive auto-selection.
+- Fixed tiny UTF-8 files being misdecoded as UTF-16, ASCII-only backup-name matching, and `CoreError::source()` for wrapped I/O errors.
+- Removed the extra duplicate backup left behind after prune-failure rollbacks, and clean up stale atomic-write temporary files during backup retention.
+- Replaced parallel pending-state fields with an explicit `EditState` (`NoFile`, `Invalid`, `Unchanged`, `Changed`).
+- Extracted file navigation and editing transitions from rendering into `crates/app/src/app/controller.rs`.
+- Generation-tagged background scans: timed-out scans can be replaced instead of wedging refreshes, and stale results are dropped.
+- Added custom-dimension steppers, per-field errors with ranges, an always-visible Apply blocker reason, a stable preview while typing, and a no-backup warning.
+- Improved the backups dialog (date-first rows, current-file comparison), made diagnostics read-only with a schema line, added guided empty states, a file sync badge in the header, and `F5`/`Ctrl+S`/`Esc` keyboard shortcuts.
+- Added a `cargo-deny` advisory policy with a recorded tool version and exception policy, plus a weekly CI check. Fixed the intra-workspace wildcard dependency.
+- Extended backup retention of CI release-candidate artifacts from 7 to 90 days.
+
 ## 2.0.0 - 2026-09-30
 
 - Rewrote the C# and WinForms application in Rust with an egui interface.

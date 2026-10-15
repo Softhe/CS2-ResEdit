@@ -55,11 +55,11 @@ fn balanced_value_quotes(caps: &regex::Captures<'_>) -> bool {
 }
 
 /// Matches `prefix + YYYYMMDD-HHMMSS[.bak]` with an optional `-N` collision
-/// suffix, case-insensitively like the original `(?i)` regex.
+/// suffix, case-insensitively for ASCII like the original `(?i)` regex.
 fn is_backup_name(name: &str, prefix: &str) -> bool {
-    let lowered = name.to_lowercase();
+    let lowered = name.to_ascii_lowercase();
     let Some(rest) = lowered
-        .strip_prefix(&prefix.to_lowercase())
+        .strip_prefix(&prefix.to_ascii_lowercase())
         .and_then(strip_bak_suffix)
     else {
         return false;
@@ -242,6 +242,10 @@ impl VideoConfigService {
                                     "{err}; rolling back the configuration also failed: {rollback}"
                                 ))
                                 })?;
+                            // Rollback restored the original bytes, so the
+                            // just-created backup now duplicates the live file.
+                            // Remove it to restore the pre-update backup set.
+                            let _ = fs::remove_file(backup);
                         }
                         return Err(err);
                     }
@@ -364,6 +368,9 @@ impl VideoConfigService {
                             "Pruning old backups failed: {err}; rolling back the configuration also failed: {rollback_error}"
                         ))
                     })?;
+                    // Rollback restored the pre-restore bytes, so the
+                    // rollback backup now duplicates the live file.
+                    let _ = fs::remove_file(&rollback);
                     return Err(err.context("Pruning old backups failed"));
                 }
                 Ok(rollback)
@@ -421,6 +428,8 @@ impl VideoConfigService {
         for backup in backup_paths(path)?.iter().skip(5) {
             fs::remove_file(backup)?;
         }
+        // Opportunistic cleanup of crash leftovers for this target only.
+        fsutil::sweep_stale_temp_files(path, 7 * 24 * 60 * 60);
         Ok(())
     }
 }
@@ -692,5 +701,5 @@ fn looks_utf16(bytes: &[u8], little_endian: bool) -> bool {
         }
         index += 2;
     }
-    zeroes >= sample / 8
+    zeroes > 0 && zeroes >= sample / 8
 }
