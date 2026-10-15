@@ -56,6 +56,7 @@ impl ResEditApp {
 
     pub(super) fn adopt_accounts(&mut self, root_count: usize, discovered: Vec<SteamAccount>) {
         let prior_operation = self.operation_status.clone();
+        let mut refresh_has_warning = false;
         let prior_path = self.selected_path.clone();
         let had_pending_changes = self.has_pending_changes();
         self.accounts.clear();
@@ -131,6 +132,7 @@ impl ResEditApp {
                         false,
                     );
                 } else if !self.load_path(Some(PathBuf::from(&account.config_path))) {
+                    refresh_has_warning = true;
                     self.selected_account = prior_path.as_ref().and_then(|prior| {
                         self.accounts.iter().position(|entry| {
                             fsutil::paths_equal_ci(&entry.config_path, &prior.to_string_lossy())
@@ -141,6 +143,7 @@ impl ResEditApp {
                     // refresh confirmation that triggered the load.
                     let loaded = self.status.clone();
                     let warning = self.status_warning;
+                    refresh_has_warning = warning;
                     let combined = if loaded.starts_with("Configuration loaded") {
                         loaded.replacen(
                             "Configuration loaded",
@@ -162,7 +165,9 @@ impl ResEditApp {
         } else {
             self.load_path(None);
         }
-        if self.selected_path == prior_path {
+        // A new reload error or preference warning takes precedence over an
+        // earlier operation result, even when the old snapshot remains loaded.
+        if self.selected_path == prior_path && !refresh_has_warning {
             if let Some((message, warning)) = prior_operation {
                 self.set_operation_status(&message, warning);
             }

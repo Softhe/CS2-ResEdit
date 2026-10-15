@@ -952,6 +952,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn account_refresh_surfaces_new_load_errors_and_preference_warnings() {
+        for preference_failure in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = dir.path().join("cs2_video.txt");
+            let settings = dir.path().join("settings.json");
+            std::fs::write(&config, "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n").unwrap();
+            let mut app = ResEditApp::new(Some(settings.clone()), None, None);
+            assert!(app.load_path(Some(config.clone())));
+            app.custom_width = "1280".into();
+            app.pending_changed();
+            app.apply();
+            assert!(app.status.starts_with("Changes applied."));
+            assert!(!app.has_pending_changes());
+            if preference_failure {
+                std::fs::remove_file(&settings).unwrap();
+                std::fs::create_dir(&settings).unwrap();
+            } else {
+                std::fs::write(&config, "invalid configuration").unwrap();
+            }
+            app.adopt_accounts(0, vec![custom_account(&config)]);
+            assert!(app.status_warning, "new warning hidden: {}", app.status);
+            assert!(!app.status.starts_with("Changes applied."));
+            assert!(app.operation_status.is_none());
+            assert_eq!(app.selected_path.as_ref(), Some(&config));
+            assert_eq!(app.original.unwrap().width, 1280);
+            if preference_failure {
+                assert!(app.status.contains("Preferences could not be saved"));
+            }
+            let warning = app.status.clone();
+            app.pending_changed();
+            assert_eq!(app.status, warning);
+        }
+    }
+
+    #[test]
     fn operation_results_survive_edits_displays_and_account_scans() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("cs2_video.txt");
