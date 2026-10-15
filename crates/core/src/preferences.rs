@@ -157,7 +157,15 @@ impl PreferencesService {
         recent_paths: &[String],
         path: Option<&Path>,
     ) -> Preferences {
-        self.save_selection(last_account_id, None, recent_paths, path)
+        // Preserve the stored selection; `save` predates `LastConfigPath`
+        // and callers expect it not to drop the remembered file.
+        let existing = self.read(path).last_config_path;
+        self.save_selection(
+            last_account_id,
+            existing.as_deref().map(Path::new),
+            recent_paths,
+            path,
+        )
     }
 
     pub fn save_selection(

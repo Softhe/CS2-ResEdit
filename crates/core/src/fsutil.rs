@@ -124,7 +124,7 @@ pub fn path_key(path: &Path) -> String {
     let value = absolute_lossy(path).to_string_lossy().to_string();
     #[cfg(windows)]
     {
-        value.to_lowercase()
+        value.to_ascii_lowercase()
     }
     #[cfg(not(windows))]
     {
@@ -140,6 +140,31 @@ pub fn file_mtime_nanos(path: &Path) -> i64 {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+/// Best-effort removal of stale `atomic_write` temporary files
+/// (`.{name}.{pid}.{nanos}.{attempt}.tmp`) left behind by crashes.
+/// Only files older than `max_age_secs` are removed; errors are ignored.
+pub fn sweep_stale_temp_files(directory: &Path, max_age_secs: u64) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with('.') || !name.ends_with(".tmp") {
+            continue;
+        }
+        let stale = fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age.as_secs() >= max_age_secs);
+        if stale {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 fn replace_or_move(temporary: &Path, path: &Path) -> io::Result<()> {

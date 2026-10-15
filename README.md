@@ -63,7 +63,15 @@ The title-bar and running taskbar icons follow the theme. The executable's File 
 
 Hover over any closed dropdown and scroll down to select the next entry or up to select the previous entry. Selection stops at either end. This applies to accounts, displays, presets, aspect ratios, and themes. Open menus retain normal scrolling.
 
-The custom width and height fields also accept wheel input. Scroll up to increase a value or down to decrease it. Adjustments stay within the allowed dimension range.
+The custom width and height fields also accept wheel input. Scroll up to increase a value or down to decrease it. Adjustments stay within the allowed dimension range. The `-` and `+` buttons beside each field step the value by one.
+
+## Keyboard shortcuts
+
+| Keys | Action |
+| --- | --- |
+| `F5` | Refresh Steam accounts |
+| `Ctrl+S` | Apply changes, when available |
+| `Esc` | Close the topmost dialog |
 
 ## File changes and recovery
 
@@ -93,7 +101,9 @@ Preference files under other product names or unversioned directories are not im
 
 Choose Diagnostics to view a support report. Copy copies the readable summary; Export JSON saves the structured report.
 
-Reports include application and operating-system details, display and mode counts, Steam discovery counts, and configuration-format status. They exclude account names and identifiers, paths, configuration contents, and preference values. Exporting a report does not send it anywhere.
+Reports include application and operating-system details, runtime description, high-contrast state, display and mode counts, Steam discovery counts, recognized backup count, and configuration-format status. They exclude account names and identifiers, paths, configuration contents, and preference values. Exporting a report does not send it anywhere.
+
+The structured JSON report uses schema version 2 with privacy-safe fields only: `schema_version`, `generated_utc`, `application_version`, `operating_system`, `architecture`, `runtime_description`, `high_contrast`, per-display `is_primary`/`current_width`/`current_height`/`mode_count`, `steam_root_count`, `account_count`, `backup_count`, `configuration_status`, `configuration_encoding`, `configuration_has_bom`, `configuration_line_ending`, and `error_category`.
 
 ## Verify the download
 

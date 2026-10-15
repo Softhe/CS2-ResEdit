@@ -106,7 +106,7 @@ jobs:
             dist/CS2-ResEdit.exe
             dist/CS2-ResEdit.exe.sha256
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
 
   # Cross-platform guard: exercises the non-Windows code paths (fsutil
   # rename/fd-fsync, cfg(not(windows)) stubs) so regressions surface in CI

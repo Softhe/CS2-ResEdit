@@ -145,12 +145,15 @@ impl DisplayInfo {
             .device_name
             .strip_prefix("\\\\.\\")
             .unwrap_or(&self.device_name);
+        let dimensions = if self.current_width > 0 && self.current_height > 0 {
+            format!("{}x{}", self.current_width, self.current_height)
+        } else {
+            "unknown".to_string()
+        };
         format!(
-            "{}  ·  {}  ·  {}x{}{}",
+            "{}  ·  {}  ·  {dimensions}{}",
             self.friendly_name,
             display,
-            self.current_width,
-            self.current_height,
             if self.is_primary { "  ·  Primary" } else { "" }
         )
     }
@@ -186,9 +189,12 @@ pub struct DiagnosticReport {
     pub application_version: String,
     pub operating_system: String,
     pub architecture: String,
+    pub runtime_description: String,
+    pub high_contrast: bool,
     pub displays: Vec<DiagnosticDisplay>,
     pub steam_root_count: usize,
     pub account_count: usize,
+    pub backup_count: usize,
     pub configuration_status: String,
     pub configuration_encoding: Option<String>,
     pub configuration_has_bom: Option<bool>,

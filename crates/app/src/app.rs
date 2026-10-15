@@ -17,9 +17,12 @@ use std::time::{Duration, Instant};
 
 use crate::theme::ThemePalette;
 
+mod controller;
 mod panels;
 #[cfg(test)]
 use panels::{preview_rectangle, preview_viewport};
+
+pub(crate) use controller::EditState;
 
 const ASPECT_LABELS: [&str; 3] = ["4:3 / 5:4", "16:9", "16:10"];
 const DISPLAY_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -27,10 +30,14 @@ const SLOW_SCAN_THRESHOLD: Duration = Duration::from_millis(150);
 const SCAN_NOTICE_DURATION: Duration = Duration::from_secs(4);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Background enumeration request. `generation` matches the coordinator
+/// sequence at spawn time; results from an older generation are stale and
+/// must be dropped instead of adopted (see `poll_scans`).
 struct PendingScan<T> {
     receiver: mpsc::Receiver<T>,
     started: Instant,
     timeout_reported: bool,
+    generation: u64,
 }
 
 type AccountScanResult = (usize, Vec<SteamAccount>, Vec<String>);
@@ -59,8 +66,11 @@ pub struct ResEditApp {
     snapshot: Option<VideoConfigSnapshot>,
     // Cached derived state, refreshed by pending_changed(); the frame loop
     // never re-parses or re-formats these.
-    pending: Option<Resolution>,
-    pending_differs: Option<bool>,
+    edit: EditState,
+    /// Last valid pending resolution, kept so the aspect preview stays stable
+    /// while custom-dimension typing passes through intermediate invalid states.
+    /// Never used for Apply; `edit` alone gates `can_apply()`.
+    preview_fallback: Option<Resolution>,
     current_label: String,
     pending_label: String,
     create_backup: bool,
@@ -79,6 +89,12 @@ pub struct ResEditApp {
     diagnostics_summary: String,
     diagnostics_json: String,
     discovered_root_count: usize,
+    /// Preferences-load warning from startup. `load_path` saves preferences
+    /// on every successful load, and a save result carries `warning: None`
+    /// unless the save itself fails — without this field the original
+    /// corrupt-settings warning would be silently discarded after the first
+    /// save (see `load_path`).
+    load_warning: Option<String>,
     display_labels: Vec<String>,
     initialized: bool,
     theme_applied: bool,
@@ -88,6 +104,12 @@ pub struct ResEditApp {
     account_scan: Option<PendingScan<AccountScanResult>>,
     display_scan: Option<PendingScan<Vec<DisplayInfo>>>,
     scan_notice: Option<(String, Instant)>,
+    /// Generation-tagged scan coordinator sequences. A refresh that finds a
+    /// timed-out scan replaces it with a newer generation; late results from
+    /// the abandoned generation are dropped on arrival so a hung worker can
+    /// never wedge future scans or overwrite newer state.
+    account_scan_seq: u64,
+    display_scan_seq: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -129,8 +151,8 @@ impl ResEditApp {
             selected_path: None,
             original: None,
             snapshot: None,
-            pending: None,
-            pending_differs: None,
+            edit: EditState::NoFile,
+            preview_fallback: None,
             current_label: "—".to_string(),
             pending_label: "—".to_string(),
             create_backup: true,
@@ -148,6 +170,7 @@ impl ResEditApp {
             diagnostics_summary: String::new(),
             diagnostics_json: String::new(),
             discovered_root_count: 0,
+            load_warning: None,
             display_labels: Vec::new(),
             initialized: false,
             theme_applied: false,
@@ -157,6 +180,8 @@ impl ResEditApp {
             account_scan: None,
             display_scan: None,
             scan_notice: None,
+            account_scan_seq: 0,
+            display_scan_seq: 0,
         }
     }
 
@@ -175,7 +200,11 @@ impl ResEditApp {
             self.palette = ThemePalette::for_theme(self.preferences.theme);
             self.theme_applied = false;
         }
-        if let Some(warning) = self.preferences.warning.clone() {
+        // Keep the read-time warning aside: `load_path` saves preferences on
+        // every successful load and would otherwise clobber it with a fresh
+        // `warning: None` result.
+        self.load_warning = self.preferences.warning.clone();
+        if let Some(warning) = self.load_warning.clone() {
             self.set_status(&warning, true);
         }
         self.refresh_displays();
@@ -189,8 +218,13 @@ impl ResEditApp {
     }
 
     fn refresh_accounts(&mut self) {
-        if self.account_scan.is_some() {
-            return;
+        // A scan that already timed out is abandoned: bumping the generation
+        // orphans its late result (dropped in `poll_scans`) and lets a fresh
+        // worker proceed instead of wedging refreshes forever.
+        if let Some(scan) = &self.account_scan {
+            if !scan.timeout_reported {
+                return;
+            }
         }
         let steam_root = self.steam_root.clone();
         let (sender, receiver) = mpsc::channel();
@@ -208,219 +242,32 @@ impl ResEditApp {
             let (accounts, warnings) = steam.get_accounts_with_warnings(&roots);
             let _ = sender.send((roots.len(), accounts, warnings));
         });
+        self.account_scan_seq += 1;
         self.account_scan = Some(PendingScan {
             receiver,
             started: Instant::now(),
             timeout_reported: false,
+            generation: self.account_scan_seq,
         });
     }
 
-    fn adopt_accounts(&mut self, root_count: usize, discovered: Vec<SteamAccount>) {
-        let prior_path = self.selected_path.clone();
-        let had_pending_changes = self.has_pending_changes();
-        self.accounts.clear();
-        self.discovered_root_count = root_count;
-        self.accounts.extend(discovered);
-        for path in self.preferences.recent_config_paths.clone() {
-            if !Path::new(&path).is_file() {
-                continue;
-            }
-            let already = self
-                .accounts
-                .iter()
-                .any(|a| fsutil::paths_equal_ci(&a.config_path, &path));
-            if !already {
-                self.accounts.push(custom_account(Path::new(&path)));
-            }
-        }
-        // Keep the active file visible in the selector even when a refresh
-        // no longer discovers it. Its loaded snapshot may still be useful.
-        if let Some(prior) = &prior_path {
-            if !self.accounts.iter().any(|account| {
-                fsutil::paths_equal_ci(&account.config_path, &prior.to_string_lossy())
-            }) {
-                self.accounts.push(custom_account(prior));
-            }
-        }
-        let mut selection: Option<usize> = None;
-        if let Some(prior) = &prior_path {
-            selection = self
-                .accounts
-                .iter()
-                .position(|a| fsutil::paths_equal_ci(&a.config_path, &prior.to_string_lossy()));
-        }
-        if selection.is_none() && prior_path.is_none() {
-            if let Some(last_path) = &self.preferences.last_config_path {
-                selection = self
-                    .accounts
-                    .iter()
-                    .position(|a| fsutil::paths_equal_ci(&a.config_path, last_path));
-            }
-        }
-        if selection.is_none() && prior_path.is_none() {
-            if let Some(last) = &self.preferences.last_account_id.clone() {
-                selection = self
-                    .accounts
-                    .iter()
-                    .position(|a| a.account_id == *last && a.has_config);
-            }
-        }
-        if selection.is_none() {
-            selection = self.accounts.iter().position(|a| a.has_config);
-        }
-        self.selected_account = selection;
-        if self.accounts.is_empty() {
-            self.set_status(
-                "No Steam accounts found. Use Browse to select cs2_video.txt.",
-                false,
-            );
-        } else {
-            self.set_status("Steam accounts refreshed.", false);
-        }
-        // Load the newly selected account (mirrors AccountChanged via selection).
-        if let Some(index) = self.selected_account {
-            let account = self.accounts[index].clone();
-            if account.has_config {
-                if had_pending_changes
-                    && prior_path.as_ref().is_some_and(|prior| {
-                        fsutil::paths_equal_ci(&account.config_path, &prior.to_string_lossy())
-                    })
-                {
-                    self.set_status("Steam accounts refreshed. Unsaved changes kept.", false);
-                } else {
-                    if !self.load_path(Some(PathBuf::from(&account.config_path))) {
-                        self.selected_account = prior_path.as_ref().and_then(|prior| {
-                            self.accounts.iter().position(|entry| {
-                                fsutil::paths_equal_ci(&entry.config_path, &prior.to_string_lossy())
-                            })
-                        });
-                    }
-                }
-            } else {
-                self.load_path(None);
-                self.set_status(
-                    "This account does not have a CS2 video configuration.",
-                    true,
-                );
-            }
-        } else {
-            self.load_path(None);
-        }
-    }
-
-    fn load_path(&mut self, path: Option<PathBuf>) -> bool {
-        let Some(path) = path else {
-            self.selected_path = None;
-            self.original = None;
-            self.snapshot = None;
-            self.external_change_notice = None;
-            self.pending_changed();
-            return true;
-        };
-        match self.configs.read_snapshot(&path) {
-            Ok(snapshot) => {
-                self.selected_path = Some(path.clone());
-                self.original = None;
-                self.snapshot = None;
-                self.external_change_notice = None;
-                self.original = Some(snapshot.state);
-                self.snapshot = Some(snapshot);
-                self.reset_pending();
-                let account_id = self
-                    .selected_account
-                    .and_then(|i| self.accounts.get(i))
-                    .map(|a| a.account_id.clone())
-                    .unwrap_or_default();
-                let recent = self.preferences_service().add_recent(
-                    &self.preferences.recent_config_paths,
-                    &path.to_string_lossy(),
-                );
-                self.preferences = self.preferences_service().save_selection_with_theme(
-                    Some(&account_id),
-                    Some(&path),
-                    &recent,
-                    self.preferences.theme,
-                    self.settings_path_opt(),
-                );
-                if let Some(warning) = self.preferences.warning.clone() {
-                    self.set_status(&format!("Configuration loaded. {warning}"), true);
-                } else {
-                    self.set_status("Configuration loaded.", false);
-                }
-                true
-            }
-            Err(err) => {
-                self.set_status(&err.to_string(), true);
-                false
-            }
-        }
-    }
-
-    fn reset_pending(&mut self) {
-        let Some(original) = self.original else {
-            return;
-        };
-        self.aspect_index = original.aspect_mode.clamp(0, 2) as usize;
-        self.populate_preset_choices(
-            self.aspect_index as i32,
-            Some(original.width),
-            Some(original.height),
-        );
-        self.custom_width = original.width.to_string();
-        self.custom_height = original.height.to_string();
-        self.pending_changed();
-    }
-
-    fn on_preset_selected(&mut self, index: usize) {
-        self.selected_preset = index;
-        if index == 0 {
-            if let Some(original) = self.original {
-                self.custom_width = original.width.to_string();
-                self.custom_height = original.height.to_string();
-            }
-            self.pending_changed();
-            return;
-        }
-        let Some(choice) = self.preset_choices.get(index).cloned() else {
-            self.pending_changed();
-            return;
-        };
-        if let Some(resolution) = choice.resolution {
-            self.custom_width = resolution.width.to_string();
-            self.custom_height = resolution.height.to_string();
-            self.aspect_index = resolution.mode.clamp(0, 2) as usize;
-        }
-        self.pending_changed();
-    }
-
-    fn on_aspect_selected(&mut self, index: usize) {
-        self.aspect_index = index;
-        let Ok(recommended) = ResolutionCatalog::recommended_preset(index as i32) else {
-            return;
-        };
-        self.populate_preset_choices(
-            index as i32,
-            Some(recommended.width),
-            Some(recommended.height),
-        );
-        self.custom_width = recommended.width.to_string();
-        self.custom_height = recommended.height.to_string();
-        self.pending_changed();
-    }
-
     fn refresh_displays(&mut self) {
-        if self.display_scan.is_some() {
-            return;
+        if let Some(scan) = &self.display_scan {
+            if !scan.timeout_reported {
+                return;
+            }
         }
         let provider = Arc::clone(&self.display_provider);
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let _ = sender.send(provider.get_displays());
         });
+        self.display_scan_seq += 1;
         self.display_scan = Some(PendingScan {
             receiver,
             started: Instant::now(),
             timeout_reported: false,
+            generation: self.display_scan_seq,
         });
     }
 
@@ -463,16 +310,24 @@ impl ResEditApp {
             match scan.receiver.try_recv() {
                 Ok((root_count, accounts, warnings)) => {
                     let elapsed = scan.started.elapsed();
+                    let current = scan.generation == self.account_scan_seq;
                     self.account_scan = None;
-                    self.adopt_accounts(root_count, accounts);
-                    self.note_scan("Steam account scan", elapsed);
-                    if !warnings.is_empty() {
-                        self.set_status("Steam accounts were found, but account names could not be read from one or more Steam installations.", true);
+                    // Stale generations (abandoned after a timeout) must not
+                    // overwrite state adopted by a newer scan.
+                    if current {
+                        self.adopt_accounts(root_count, accounts);
+                        self.note_scan("Steam account scan", elapsed);
+                        if !warnings.is_empty() {
+                            self.set_status("Steam accounts were found, but account names could not be read from one or more Steam installations.", true);
+                        }
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    let current = scan.generation == self.account_scan_seq;
                     self.account_scan = None;
-                    self.set_status("Steam account scan failed.", true);
+                    if current {
+                        self.set_status("Steam account scan failed.", true);
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -481,15 +336,21 @@ impl ResEditApp {
             match scan.receiver.try_recv() {
                 Ok(displays) => {
                     let elapsed = scan.started.elapsed();
+                    let current = scan.generation == self.display_scan_seq;
                     self.display_scan = None;
-                    if displays != self.displays {
-                        self.adopt_displays(displays);
+                    if current {
+                        if displays != self.displays {
+                            self.adopt_displays(displays);
+                        }
+                        self.note_scan("Display scan", elapsed);
                     }
-                    self.note_scan("Display scan", elapsed);
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    let current = scan.generation == self.display_scan_seq;
                     self.display_scan = None;
-                    self.set_status("Display scan failed.", true);
+                    if current {
+                        self.set_status("Display scan failed.", true);
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -548,339 +409,20 @@ impl ResEditApp {
                 .is_some_and(|scan| !scan.timeout_reported)
     }
 
-    fn display_changed(&mut self) {
-        self.supported_modes = self
-            .displays
-            .get(self.selected_display)
-            .map(|d| d.modes.iter().map(|m| (m.width, m.height)).collect())
-            .unwrap_or_default();
-        let width = self.custom_width.parse::<i32>().ok();
-        let height = self.custom_height.parse::<i32>().ok();
-        self.populate_preset_choices(self.aspect_index as i32, width, height);
-        self.pending_changed();
-    }
-
-    fn populate_preset_choices(&mut self, mode: i32, width: Option<i32>, height: Option<i32>) {
-        let mut supported: Vec<Resolution> = self
-            .supported_modes
-            .iter()
-            .filter_map(|(w, h)| ResolutionCatalog::parse(&format!("{w}x{h}"), None).ok())
-            .filter(|r| r.mode == mode)
-            .collect();
-        supported.sort_by(|a, b| a.width.cmp(&b.width).then(a.height.cmp(&b.height)));
-        let mut displayed: Vec<Resolution> = supported;
-        for preset in ResolutionCatalog::presets()
-            .iter()
-            .filter(|p| p.mode == mode)
-        {
-            if !self
-                .supported_modes
-                .contains(&(preset.width, preset.height))
-                && !displayed
-                    .iter()
-                    .any(|r| r.width == preset.width && r.height == preset.height)
-            {
-                displayed.push(*preset);
-            }
-        }
-        // Deduplicate preserving order.
-        let mut seen = HashSet::new();
-        displayed.retain(|r| seen.insert((r.width, r.height)));
-
-        self.preset_choices.clear();
-        self.preset_choices.push(PresetChoice {
-            resolution: None,
-            label: "Custom resolution".to_string(),
-        });
-        for resolution in displayed {
-            let status = if self
-                .supported_modes
-                .contains(&(resolution.width, resolution.height))
-            {
-                "available"
-            } else {
-                "not reported"
-            };
-            self.preset_choices.push(PresetChoice {
-                resolution: Some(resolution),
-                label: format!(
-                    "{}  ({})  —  {status}",
-                    resolution.display(),
-                    resolution.ratio
-                ),
-            });
-        }
-        let matching = (width, height);
-        self.selected_preset = match matching {
-            (Some(w), Some(h)) => self
-                .preset_choices
-                .iter()
-                .position(|c| c.resolution.map(|r| (r.width, r.height)) == Some((w, h)))
-                .unwrap_or(0),
-            _ => 0,
-        };
-    }
-
-    fn pending_resolution(&self) -> Result<Resolution, String> {
-        ResolutionCatalog::parse(
-            &format!("{}x{}", self.custom_width, self.custom_height),
-            Some(self.aspect_index as i32),
-        )
-        .map_err(|e| e.to_string())
-    }
-
-    fn pending_changed(&mut self) {
-        let Some(original) = self.original else {
-            self.pending = None;
-            self.pending_differs = None;
-            self.current_label = "—".to_string();
-            self.pending_label = "—".to_string();
-            self.validation.clear();
-            self.availability.clear();
-            self.availability_ok = None;
-            return;
-        };
-        self.current_label = {
-            let name =
-                ResolutionCatalog::mode_name(original.aspect_mode, original.width, original.height)
-                    .unwrap_or("?");
-            format!(
-                "Current:  {} × {}  ·  {name}",
-                original.width, original.height
-            )
-        };
-        match self.pending_resolution() {
-            Ok(resolution) => {
-                let differs = original
-                    != cs2_resedit_core::VideoConfigState {
-                        width: resolution.width,
-                        height: resolution.height,
-                        aspect_mode: resolution.mode,
-                    };
-                let name = ResolutionCatalog::mode_name(
-                    resolution.mode,
-                    resolution.width,
-                    resolution.height,
-                )
-                .unwrap_or("?");
-                self.pending = Some(resolution);
-                self.pending_differs = Some(differs);
-                self.pending_label = format!(
-                    "Pending:  {} × {}  ·  {name}",
-                    resolution.width, resolution.height
-                );
-                self.validation.clear();
-                if self.supported_modes.is_empty() {
-                    self.availability = "Display modes unavailable".to_string();
-                    self.availability_ok = None;
-                } else if self
-                    .supported_modes
-                    .contains(&(resolution.width, resolution.height))
-                {
-                    // U+2714 is bundled; U+2713 is tofu.
-                    self.availability = "✔ Reported for selected display".to_string();
-                    self.availability_ok = Some(true);
-                } else {
-                    self.availability = "Not reported; custom use is still allowed".to_string();
-                    self.availability_ok = Some(false);
-                }
-                self.status = if differs {
-                    "Review the pending settings, then apply the change.".to_string()
-                } else {
-                    "No pending changes.".to_string()
-                };
-                self.status_warning = false;
-            }
-            Err(message) => {
-                self.pending = None;
-                self.pending_differs = None;
-                self.pending_label = "Pending: invalid custom resolution".to_string();
-                self.status = message.clone();
-                self.status_warning = true;
-                self.validation = message;
-                self.availability.clear();
-                self.availability_ok = None;
-            }
-        }
-    }
-
-    fn has_pending_changes(&self) -> bool {
-        let Some(_) = self.original else {
-            return false;
-        };
-        match self.pending {
-            // Invalid custom dimensions keep Reset enabled (C# parity).
-            None => true,
-            Some(_) => self.pending_differs == Some(true),
-        }
-    }
-
-    fn can_apply(&self) -> bool {
-        self.pending.is_some() && self.pending_differs == Some(true)
-    }
-
-    fn apply(&mut self) {
-        let Some(path) = self.selected_path.clone() else {
-            return;
-        };
-        let Some(resolution) = self.pending else {
-            return;
-        };
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            self.set_status("Reload the configuration before applying changes.", true);
-            return;
-        };
-        match self
-            .configs
-            .update_if_unchanged(&path, &resolution, self.create_backup, snapshot)
-        {
-            Ok(UpdateResult {
-                changed,
-                backup_path,
-            }) => {
-                match self.configs.read_snapshot(&path) {
-                    Ok(snapshot) => {
-                        self.original = Some(snapshot.state);
-                        self.snapshot = Some(snapshot);
-                        self.reset_pending();
-                    }
-                    Err(err) => {
-                        self.set_status(
-                            &err.context("Verifying the updated configuration failed")
-                                .to_string(),
-                            true,
-                        );
-                        return;
-                    }
-                }
-                if changed {
-                    match backup_path {
-                        Some(backup) => {
-                            let name = Path::new(&backup)
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or(backup);
-                            self.set_status(&format!("Changes applied. Backup: {name}"), false);
-                        }
-                        None => self.set_status("Changes applied.", false),
-                    }
-                } else {
-                    self.set_status("The configuration already has these settings.", false);
-                }
-            }
-            Err(CoreError::ExternalChange(message)) => {
-                self.external_change_notice = Some(describe_external_change(
-                    snapshot.state,
-                    self.configs.read(&path),
-                ));
-                self.set_status(&message, true);
-            }
-            Err(err) => self.set_status(&err.to_string(), true),
-        }
-    }
-
-    fn open_backups(&mut self) {
-        self.confirm_restore = false;
-        self.selected_backup = None;
-        let Some(path) = self.selected_path.as_ref() else {
-            self.set_status("Select a configuration first.", true);
-            return;
-        };
-        self.backups = match self.configs.get_backups(path) {
-            Ok(backups) => backups,
-            Err(err) => {
-                self.set_status(&format!("Could not load backups: {err}"), true);
-                return;
-            }
-        };
-        self.show_backups = true;
-    }
-
-    fn restore_selected_backup(&mut self) {
-        let (Some(config), Some(index)) = (self.selected_path.clone(), self.selected_backup) else {
-            return;
-        };
-        let Some(backup) = self.backups.get(index).cloned() else {
-            return;
-        };
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            self.set_status("Reload the configuration before restoring a backup.", true);
-            return;
-        };
-        match self
-            .configs
-            .restore_if_unchanged(&config, Path::new(&backup.path), snapshot)
-        {
-            Ok(_) => {
-                self.show_backups = false;
-                self.confirm_restore = false;
-                self.load_path(Some(config));
-                if self.original.is_some() {
-                    if let Some(warning) = self.preferences.warning.clone() {
-                        self.set_status(&format!("Backup restored successfully. {warning}"), true);
-                    } else {
-                        self.set_status("Backup restored successfully.", false);
-                    }
-                }
-            }
-            Err(CoreError::ExternalChange(message)) => {
-                self.external_change_notice = Some(describe_external_change(
-                    snapshot.state,
-                    self.configs.read(&config),
-                ));
-                self.set_status(&message, true);
-            }
-            Err(err) => self.set_status(&err.to_string(), true),
-        }
-    }
-
     fn open_diagnostics(&mut self) {
         let version = env!("CARGO_PKG_VERSION");
-        let report = DiagnosticService::create(
+        let report = DiagnosticService::create_with_options(
             &self.configs,
             version,
             &self.displays,
             self.discovered_root_count,
             self.accounts.len(),
             self.selected_path.as_deref(),
+            self.palette.high_contrast,
         );
         self.diagnostics_summary = DiagnosticService::to_summary(&report);
         self.diagnostics_json = DiagnosticService::to_json(&report);
         self.show_diagnostics = true;
-    }
-
-    fn browse(&mut self) {
-        let Some(file) = rfd::FileDialog::new()
-            .set_title("Select the CS2 video configuration")
-            .add_filter("CS2 video configuration (cs2_video.txt)", &["txt"])
-            .add_filter("Text files (*.txt)", &["txt"])
-            .set_file_name("cs2_video.txt")
-            .pick_file()
-        else {
-            return;
-        };
-        if let Err(err) = self.configs.read(&file) {
-            // Surface the real validation failure (C# showed ex.Message).
-            self.set_status(&err.to_string(), true);
-            return;
-        }
-        let recent = self.preferences_service().add_recent(
-            &self.preferences.recent_config_paths,
-            &file.to_string_lossy(),
-        );
-        self.preferences.recent_config_paths = recent;
-        if !self
-            .accounts
-            .iter()
-            .any(|a| fsutil::paths_equal_ci(&a.config_path, &file.to_string_lossy()))
-        {
-            self.accounts.push(custom_account(&file));
-        }
-        self.selected_account = self
-            .accounts
-            .iter()
-            .position(|a| fsutil::paths_equal_ci(&a.config_path, &file.to_string_lossy()));
-        self.load_path(Some(file));
     }
 
     fn set_status(&mut self, message: &str, warning: bool) {
@@ -970,6 +512,21 @@ impl eframe::App for ResEditApp {
         if !modal_open && ctx.input(|i| i.key_pressed(egui::Key::F5)) {
             self.refresh_accounts();
         }
+        // Esc closes the topmost modal; diagnostics sits above backups.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.show_diagnostics {
+                self.show_diagnostics = false;
+            } else if self.show_backups {
+                self.show_backups = false;
+                self.confirm_restore = false;
+            }
+        }
+        if !modal_open
+            && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S))
+            && self.can_apply()
+        {
+            self.apply();
+        }
         let palette = self.palette;
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
@@ -980,30 +537,47 @@ impl eframe::App for ResEditApp {
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let previous = self.preferences.theme;
-                    ui.add_enabled_ui(!modal_open && !palette.high_contrast, |ui| {
-                        let response = egui::ComboBox::from_id_salt("ui_theme")
-                            .selected_text(self.preferences.theme.label())
-                            .width(105.0)
-                            .show_ui(ui, |ui| {
-                                for theme in UiTheme::ALL {
-                                    ui.selectable_value(
-                                        &mut self.preferences.theme,
-                                        theme,
-                                        theme.label(),
-                                    );
-                                }
+                    if palette.high_contrast {
+                        ui.label("High Contrast")
+                            .on_hover_text("Theme follows Windows High Contrast settings");
+                    } else {
+                        ui.add_enabled_ui(!modal_open, |ui| {
+                            let response = egui::ComboBox::from_id_salt("ui_theme")
+                                .selected_text(self.preferences.theme.label())
+                                .width(105.0)
+                                .show_ui(ui, |ui| {
+                                    for theme in UiTheme::ALL {
+                                        ui.selectable_value(
+                                            &mut self.preferences.theme,
+                                            theme,
+                                            theme.label(),
+                                        );
+                                    }
+                                });
+                            response.response.clone().labelled_by(ui.label("Theme").id);
+                            // Force an accessible name like `named_combo` does for
+                            // settings-card combos (egui 0.32 + Windows UIA).
+                            let theme_enabled = ui.is_enabled();
+                            response.response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::ComboBox,
+                                    theme_enabled,
+                                    "Theme",
+                                )
                             });
-                        response.response.clone().labelled_by(ui.label("Theme").id);
-                        let current = UiTheme::ALL
-                            .iter()
-                            .position(|theme| *theme == self.preferences.theme)
-                            .unwrap_or(0);
-                        if let Some(index) =
-                            panels::wheel_selection(&response.response, current, UiTheme::ALL.len())
-                        {
-                            self.preferences.theme = UiTheme::ALL[index];
-                        }
-                    });
+                            let current = UiTheme::ALL
+                                .iter()
+                                .position(|theme| *theme == self.preferences.theme)
+                                .unwrap_or(0);
+                            if let Some(index) = panels::wheel_selection(
+                                &response.response,
+                                current,
+                                UiTheme::ALL.len(),
+                            ) {
+                                self.preferences.theme = UiTheme::ALL[index];
+                            }
+                        });
+                    }
                     if previous != self.preferences.theme {
                         self.palette = ThemePalette::for_theme(self.preferences.theme);
                         self.theme_applied = false;
@@ -1019,11 +593,35 @@ impl eframe::App for ResEditApp {
                         }
                         ctx.request_repaint();
                     }
-                    ui.label(
-                        egui::RichText::new("CS2  •  DISPLAY")
-                            .color(palette.accent)
-                            .strong(),
-                    );
+                    // Header badge doubles as sync state: file name plus
+                    // unsaved/synced marker instead of a static label.
+                    let (badge, badge_color) = match &self.selected_path {
+                        None => ("No configuration".to_string(), palette.muted),
+                        Some(path) => {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "cs2_video.txt".to_string());
+                            let marker = if self.has_pending_changes() {
+                                "• "
+                            } else {
+                                ""
+                            };
+                            (
+                                format!("{marker}{name}"),
+                                if self.has_pending_changes() {
+                                    palette.accent
+                                } else {
+                                    palette.muted
+                                },
+                            )
+                        }
+                    };
+                    ui.label(egui::RichText::new(badge).color(badge_color).strong())
+                        .on_hover_text(match &self.selected_path {
+                            None => "Select an account or browse to a config file".to_string(),
+                            Some(path) => path.to_string_lossy().to_string(),
+                        });
                 });
             });
         });
@@ -1076,6 +674,11 @@ impl eframe::App for ResEditApp {
                                 "No pending changes to discard"
                             });
                         }
+                        // Always-visible reason for a disabled Apply; hover
+                        // tooltips alone exclude touch and keyboard users.
+                        if let Some(reason) = self.apply_blocker_reason() {
+                            ui.label(egui::RichText::new(reason).small().color(palette.muted));
+                        }
                     });
                 });
             });
@@ -1101,6 +704,10 @@ impl eframe::App for ResEditApp {
                                 }
                     if self.backups.is_empty() {
                         ui.label("No editor backups were found.");
+                        ui.label(
+                            "Apply a change with backups enabled to create one. \
+                             Backups are stored next to the configuration.",
+                        );
                     } else {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for (index, backup) in self.backups.iter().enumerate() {
@@ -1110,13 +717,17 @@ impl eframe::App for ResEditApp {
                                     backup.state.height,
                                 )
                                 .unwrap_or("?");
+                                let created = chrono::DateTime::from_timestamp_nanos(backup.created)
+                                    .with_timezone(&chrono::Local);
                                 let selected = self.selected_backup == Some(index);
                                 if ui
                                     .selectable_label(
                                         selected,
                                         format!(
                                             "{}  ·  {} × {}  ·  {name}",
-                                            backup.path, backup.state.width, backup.state.height
+                                            created.format("%Y-%m-%d %H:%M:%S"),
+                                            backup.state.width,
+                                            backup.state.height
                                         ),
                                     )
                                     .clicked()
@@ -1142,6 +753,30 @@ impl eframe::App for ResEditApp {
                                     backup.state.width,
                                     backup.state.height
                                 ));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(backup.path.clone()).monospace().small(),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(backup.path.clone());
+                                if let Some(original) = self.original {
+                                    if original != backup.state {
+                                        ui.label(format!(
+                                            "Current file: {} × {} · {} — restoring will overwrite these values.",
+                                            original.width,
+                                            original.height,
+                                            ResolutionCatalog::mode_name(
+                                                original.aspect_mode,
+                                                original.width,
+                                                original.height
+                                            )
+                                            .unwrap_or("?"),
+                                        ));
+                                    } else {
+                                        ui.label("Backup matches the current file.");
+                                    }
+                                }
                             }
                         }
                         if self.confirm_restore {
@@ -1181,11 +816,13 @@ impl eframe::App for ResEditApp {
                 .default_size([640.0, 480.0])
                 .min_size([480.0, 320.0])
                 .show(ctx, |ui| {
+                    ui.label("Counts and booleans only — no names, paths, or file contents.");
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.add(
                             egui::TextEdit::multiline(&mut self.diagnostics_summary.as_str())
                                 .desired_width(f32::INFINITY)
-                                .desired_rows(12),
+                                .desired_rows(12)
+                                .interactive(false),
                         );
                     });
                     ui.horizontal(|ui| {
@@ -1218,7 +855,7 @@ impl eframe::App for ResEditApp {
 }
 
 fn export_diagnostics(path: &Path, json: &str) -> std::io::Result<()> {
-    std::fs::write(path, json.as_bytes())
+    cs2_resedit_core::fsutil::atomic_write(path, json.as_bytes())
 }
 
 fn custom_account(path: &Path) -> SteamAccount {
@@ -1314,7 +951,9 @@ mod tests {
             height: 960,
             aspect_mode: 0,
         });
-        app.pending = Some(Resolution::new(1280, 960, "4:3", 0));
+        app.edit = EditState::Unchanged {
+            resolution: Resolution::new(1280, 960, "4:3", 0),
+        };
         app.populate_preset_choices(0, Some(1280), Some(960));
 
         for theme in UiTheme::ALL {
@@ -1601,10 +1240,12 @@ mod tests {
     fn timed_out_scan_uses_slow_polling_and_can_still_finish() {
         let mut app = ResEditApp::new(None, None, None);
         let (sender, receiver) = mpsc::channel();
+        app.display_scan_seq = 7;
         app.display_scan = Some(PendingScan {
             receiver,
             started: Instant::now() - SCAN_TIMEOUT,
             timeout_reported: false,
+            generation: 7,
         });
 
         app.poll_scans();
@@ -1614,6 +1255,41 @@ mod tests {
         sender.send(Vec::new()).unwrap();
         app.poll_scans();
         assert!(app.display_scan.is_none());
+    }
+
+    #[test]
+    fn stale_scan_generations_are_dropped_and_refresh_recovers() {
+        let mut app = ResEditApp::new(None, None, None);
+        // Simulate a hung first-generation scan that already timed out.
+        let (old_sender, old_receiver) = mpsc::channel::<Vec<DisplayInfo>>();
+        app.display_scan_seq = 1;
+        app.display_scan = Some(PendingScan {
+            receiver: old_receiver,
+            started: Instant::now() - SCAN_TIMEOUT,
+            timeout_reported: true,
+            generation: 1,
+        });
+        // The abandoned worker's late result arrives while wedged.
+        let stale_display = DisplayInfo {
+            device_name: "STALE".to_string(),
+            friendly_name: "Stale display".to_string(),
+            is_primary: true,
+            current_width: 800,
+            current_height: 600,
+            modes: vec![],
+        };
+        old_sender.send(vec![stale_display]).unwrap();
+        // A refresh must replace the timed-out scan instead of wedging, and
+        // the stale queued result dies with the abandoned receiver.
+        app.refresh_displays();
+        assert_eq!(app.display_scan_seq, 2);
+        assert_eq!(app.display_scan.as_ref().unwrap().generation, 2);
+        // Fresh (non-timed-out) scans still block replacement.
+        app.refresh_displays();
+        assert_eq!(app.display_scan_seq, 2);
+        app.poll_scans();
+        assert!(app.displays.is_empty());
+        assert!(!app.displays.iter().any(|d| d.device_name == "STALE"));
     }
 
     #[test]
@@ -1721,6 +1397,178 @@ mod tests {
         assert!(invalid.contains("no longer has valid display settings"));
     }
 
+    #[test]
+    fn startup_preferences_warning_survives_first_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = dir.path().join("settings.json");
+        std::fs::write(&settings, "{ invalid json").unwrap();
+        let config = dir.path().join("cs2_video.txt");
+        std::fs::write(
+            &config,
+            "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
+        )
+        .unwrap();
+        let mut app = ResEditApp::new(Some(settings), None, None);
+        app.initialize_data();
+        assert!(app.load_warning.is_some());
+        let warning = app.status.clone();
+        assert!(app.status_warning);
+        // Simulate the auto-select load path from adopt_accounts.
+        app.selected_account = Some(0);
+        app.accounts.push(custom_account(&config));
+        app.load_path(Some(config));
+        assert!(app.status_warning);
+        assert!(app.status.contains("Configuration loaded."));
+        assert!(
+            app.status.contains("Preferences could not be loaded")
+                || warning.contains("Preferences could not be loaded"),
+            "read warning lost: {}",
+            app.status
+        );
+        assert!(app.load_warning.is_none());
+    }
+
+    #[test]
+    fn pending_refresh_preserves_operation_warnings() {
+        let mut app = ResEditApp::new(None, None, None);
+        app.original = Some(VideoConfigState {
+            width: 1920,
+            height: 1080,
+            aspect_mode: 1,
+        });
+        app.aspect_index = 1;
+        app.custom_width = "1920".to_string();
+        app.custom_height = "1080".to_string();
+        app.supported_modes.clear();
+        app.set_status("Apply failed: disk full", true);
+        app.pending_changed();
+        assert!(app.status_warning);
+        assert_eq!(app.status, "Apply failed: disk full");
+    }
+
+    #[test]
+    fn failed_restore_disarms_confirm_dialog() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("cs2_video.txt");
+        std::fs::write(
+            &config,
+            "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
+        )
+        .unwrap();
+        let mut app = ResEditApp::new(None, None, None);
+        app.load_path(Some(config.clone()));
+        app.custom_width = "1280".to_string();
+        app.pending_changed();
+        app.apply();
+        app.open_backups();
+        app.selected_backup = Some(0);
+        app.confirm_restore = true;
+        // Corrupt the live file so restore fails validation.
+        std::fs::write(&config, "invalid").unwrap();
+        // Refresh snapshot mismatch path: external edit then restore attempt.
+        app.restore_selected_backup();
+        assert!(app.status_warning);
+        assert!(!app.confirm_restore);
+    }
+
+    #[test]
+    fn invalid_dimensions_keep_footer_operation_status() {
+        let mut app = ResEditApp::new(None, None, None);
+        app.original = Some(VideoConfigState {
+            width: 1920,
+            height: 1080,
+            aspect_mode: 1,
+        });
+        app.aspect_index = 1;
+        app.custom_width = "1920".to_string();
+        app.custom_height = "1080".to_string();
+        app.supported_modes.clear();
+        app.set_status("Apply failed: disk full", true);
+        app.custom_width = "not-a-number".to_string();
+        app.pending_changed();
+        assert!(matches!(app.edit, EditState::Invalid));
+        assert!(!app.validation.is_empty());
+        assert!(app.status_warning);
+        assert_eq!(app.status, "Apply failed: disk full");
+        assert!(!app.can_apply());
+        assert_eq!(app.apply_blocker_reason(), Some("Enter valid dimensions"));
+    }
+
+    #[test]
+    fn preview_fallback_survives_invalid_keystrokes() {
+        let mut app = ResEditApp::new(None, None, None);
+        app.original = Some(VideoConfigState {
+            width: 1920,
+            height: 1080,
+            aspect_mode: 1,
+        });
+        app.aspect_index = 1;
+        app.custom_width = "1280".to_string();
+        app.custom_height = "960".to_string();
+        app.supported_modes.clear();
+        app.pending_changed();
+        assert!(app.edit.resolution().is_some());
+        let fallback = app.preview_fallback.expect("fallback");
+        assert_eq!((fallback.width, fallback.height), (1280, 960));
+        // Intermediate typing state: invalid, but the preview shape persists.
+        app.custom_width = "12".to_string();
+        app.pending_changed();
+        assert!(matches!(app.edit, EditState::Invalid));
+        assert_eq!(app.preview_fallback, Some(fallback));
+        assert!(app.preview_fallback.unwrap().width > 0);
+    }
+
+    #[test]
+    fn apply_blocker_reason_covers_all_disabled_states() {
+        let mut app = ResEditApp::new(None, None, None);
+        assert_eq!(app.apply_blocker_reason(), Some("Select a configuration"));
+        app.original = Some(VideoConfigState {
+            width: 1920,
+            height: 1080,
+            aspect_mode: 1,
+        });
+        app.aspect_index = 1;
+        app.custom_width = "bogus".to_string();
+        app.custom_height = "1080".to_string();
+        app.supported_modes.clear();
+        app.pending_changed();
+        assert_eq!(app.apply_blocker_reason(), Some("Enter valid dimensions"));
+        app.custom_width = "1920".to_string();
+        app.pending_changed();
+        assert_eq!(app.apply_blocker_reason(), Some("No changes to apply"));
+        app.custom_width = "1280".to_string();
+        app.pending_changed();
+        assert_eq!(app.apply_blocker_reason(), None);
+        assert!(app.can_apply());
+    }
+
+    #[test]
+    fn edit_state_tracks_no_file_invalid_unchanged_changed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("cs2_video.txt");
+        std::fs::write(
+            &config,
+            "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
+        )
+        .unwrap();
+        let mut app = ResEditApp::new(None, None, None);
+        assert_eq!(app.edit, EditState::NoFile);
+        assert_eq!(app.apply_blocker_reason(), Some("Select a configuration"));
+        app.supported_modes.clear();
+        app.load_path(Some(config));
+        assert!(matches!(app.edit, EditState::Unchanged { .. }));
+        assert_eq!(app.apply_blocker_reason(), Some("No changes to apply"));
+        app.custom_width = "1280".to_string();
+        app.pending_changed();
+        assert!(matches!(app.edit, EditState::Changed { .. }));
+        assert_eq!(app.apply_blocker_reason(), None);
+        app.custom_width = "bogus".to_string();
+        app.pending_changed();
+        assert_eq!(app.edit, EditState::Invalid);
+        assert_eq!(app.edit.resolution(), None);
+        assert_eq!(app.apply_blocker_reason(), Some("Enter valid dimensions"));
+    }
+
     /// Guards UI strings against tofu: every non-ASCII glyph in the UI sources
     /// must exist in egui's bundled proportional fallback chain
     /// (Ubuntu-Light, NotoEmoji-Regular, emoji-icon-font), as verified with
@@ -1732,6 +1580,9 @@ mod tests {
         let missing: Vec<char> = include_str!("app.rs")
             .chars()
             .chain(include_str!("app/panels.rs").chars())
+            .chain(include_str!("theme.rs").chars())
+            .chain(include_str!("main.rs").chars())
+            .chain(include_str!("../../core/src/models.rs").chars())
             .filter(|c| !c.is_ascii())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()

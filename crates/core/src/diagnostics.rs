@@ -15,6 +15,26 @@ impl DiagnosticService {
         account_count: usize,
         config_path: Option<&Path>,
     ) -> DiagnosticReport {
+        Self::create_with_options(
+            configs,
+            application_version,
+            displays,
+            steam_root_count,
+            account_count,
+            config_path,
+            false,
+        )
+    }
+
+    pub fn create_with_options(
+        configs: &VideoConfigService,
+        application_version: &str,
+        displays: &[DisplayInfo],
+        steam_root_count: usize,
+        account_count: usize,
+        config_path: Option<&Path>,
+        high_contrast: bool,
+    ) -> DiagnosticReport {
         let mut status = if config_path.is_none() {
             "Not selected"
         } else {
@@ -32,12 +52,19 @@ impl DiagnosticService {
             }
         }
 
+        let backup_count = config_path
+            .and_then(|path| configs.get_backups(path).ok())
+            .map(|backups| backups.len())
+            .unwrap_or(0);
+
         DiagnosticReport {
-            schema_version: 1,
+            schema_version: 2,
             generated_utc: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
             application_version: application_version.to_string(),
             operating_system: os_description(),
             architecture: std::env::consts::ARCH.to_string(),
+            runtime_description: runtime_description(),
+            high_contrast,
             displays: displays
                 .iter()
                 .map(|d| DiagnosticDisplay {
@@ -49,6 +76,7 @@ impl DiagnosticService {
                 .collect(),
             steam_root_count,
             account_count,
+            backup_count,
             configuration_status: status.to_string(),
             configuration_encoding: inspection.as_ref().map(|i| i.encoding.clone()),
             configuration_has_bom: inspection.as_ref().map(|i| i.has_bom),
@@ -64,8 +92,14 @@ impl DiagnosticService {
     pub fn to_summary(report: &DiagnosticReport) -> String {
         let mut text = String::new();
         text.push_str(&format!("CS2 ResEdit {}\n", report.application_version));
+        text.push_str(&format!("Report schema: v{}\n", report.schema_version));
         text.push_str(&format!("OS: {}\n", report.operating_system));
         text.push_str(&format!("Architecture: {}\n", report.architecture));
+        text.push_str(&format!("Runtime: {}\n", report.runtime_description));
+        text.push_str(&format!(
+            "High contrast: {}\n",
+            if report.high_contrast { "on" } else { "off" }
+        ));
         let total_modes: usize = report.displays.iter().map(|d| d.mode_count).sum();
         text.push_str(&format!(
             "Displays: {} ({} reported modes)\n",
@@ -74,6 +108,7 @@ impl DiagnosticService {
         ));
         text.push_str(&format!("Steam roots: {}\n", report.steam_root_count));
         text.push_str(&format!("Accounts discovered: {}\n", report.account_count));
+        text.push_str(&format!("Backups: {}\n", report.backup_count));
         text.push_str(&format!("Configuration: {}\n", report.configuration_status));
         if let Some(encoding) = &report.configuration_encoding {
             text.push_str(&format!(
@@ -107,4 +142,8 @@ fn os_description() -> String {
     {
         format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
     }
+}
+
+fn runtime_description() -> String {
+    format!("Rust {}", env!("CARGO_PKG_RUST_VERSION"))
 }

@@ -1,0 +1,30 @@
+# Dependency advisory policy for `cargo deny` (see ROADMAP item 4).
+# Pinned tool version for CI: cargo-deny 0.20.x. Run with:
+#   cargo deny --locked check advisories bans sources licenses
+[graph]
+targets = [{ triple = "x86_64-pc-windows-msvc" }, { triple = "x86_64-unknown-linux-gnu" }]
+all-features = true
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "warn"
+# Exception policy: each entry needs a justification and a re-check date.
+# - RUSTSEC-2026-0192 (ttf-parser unmaintained): transitive via
+#   ab_glyph <- epaint <- egui 0.32; no safe upgrade exists. Re-check when
+#   egui releases a font-stack upgrade. Exception granted 2026-10-15.
+ignore = ["RUSTSEC-2026-0192"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[licenses]
+# GPL-3.0-only: this workspace's own license (crates/app, crates/core).
+# BSL-1.0: clipboard-win (clipboard support, transitive via arboard).
+# OFL-1.1 + Ubuntu-font-1.0: epaint_default_fonts (bundled UI fonts).
+allow = ["GPL-3.0-only", "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-DFS-2016", "Unicode-3.0", "CC0-1.0", "Zlib", "MPL-2.0", "BSL-1.0", "OFL-1.1", "Ubuntu-font-1.0"]
