@@ -400,7 +400,7 @@ fn dim_field_error(text: &str, min: i32, max: i32) -> Option<String> {
 /// Unparseable input restarts from the nearer bound.
 fn step_dim(text: &str, delta: i32, min: i32) -> String {
     match text.trim().parse::<i32>() {
-        Ok(value) => (value + delta).clamp(min, 32768).to_string(),
+        Ok(value) => value.saturating_add(delta).clamp(min, 32768).to_string(),
         Err(_) if delta >= 0 => min.to_string(),
         Err(_) => 32768.to_string(),
     }
@@ -778,6 +778,8 @@ mod tests {
 
     #[test]
     fn dimension_steppers_clamp_and_recover_from_invalid_input() {
+        assert_eq!(step_dim("2147483647", 1, 320), "32768");
+        assert_eq!(step_dim("-2147483648", -1, 200), "200");
         assert_eq!(step_dim("1920", 1, 320), "1921");
         assert_eq!(step_dim("1920", -1, 320), "1919");
         assert_eq!(step_dim("320", -1, 320), "320");

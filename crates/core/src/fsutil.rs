@@ -107,11 +107,11 @@ pub fn absolute_lossy(path: &Path) -> PathBuf {
     }))
 }
 
-/// Case-insensitive path comparison; Windows filesystems ignore ASCII case.
+/// Case-insensitive path comparison; Windows paths use Unicode case folding.
 pub fn paths_equal_ci(a: &str, b: &str) -> bool {
     #[cfg(windows)]
     {
-        a.eq_ignore_ascii_case(b)
+        a.to_lowercase() == b.to_lowercase()
     }
     #[cfg(not(windows))]
     {
@@ -124,7 +124,7 @@ pub fn path_key(path: &Path) -> String {
     let value = absolute_lossy(path).to_string_lossy().to_string();
     #[cfg(windows)]
     {
-        value.to_ascii_lowercase()
+        value.to_lowercase()
     }
     #[cfg(not(windows))]
     {
@@ -145,7 +145,11 @@ pub fn file_mtime_nanos(path: &Path) -> i64 {
 /// Best-effort removal of stale `atomic_write` temporary files
 /// (`.{name}.{pid}.{nanos}.{attempt}.tmp`) left behind by crashes.
 /// Only files older than `max_age_secs` are removed; errors are ignored.
-pub fn sweep_stale_temp_files(directory: &Path, max_age_secs: u64) {
+pub fn sweep_stale_temp_files(target: &Path, max_age_secs: u64) {
+    let (Some(directory), Some(target_name)) = (target.parent(), target.file_name()) else {
+        return;
+    };
+    let prefix = format!(".{}.", target_name.to_string_lossy());
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
@@ -153,11 +157,31 @@ pub fn sweep_stale_temp_files(directory: &Path, max_age_secs: u64) {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with('.') || !name.ends_with(".tmp") {
+        let Some(suffix) = name
+            .strip_prefix(&prefix)
+            .and_then(|s| s.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        let parts: Vec<_> = suffix.split('.').collect();
+        if parts.len() != 3
+            || parts
+                .iter()
+                .any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()))
+            || parts[0].parse::<u32>().is_err()
+            || parts[1].parse::<u128>().is_err()
+            || parts[2].parse::<u32>().is_err()
+        {
             continue;
         }
-        let stale = fs::metadata(&path)
-            .and_then(|m| m.modified())
+        let stale = fs::symlink_metadata(&path)
+            .and_then(|m| {
+                if m.is_file() {
+                    m.modified()
+                } else {
+                    Err(io::Error::other("not a regular file"))
+                }
+            })
             .ok()
             .and_then(|t| now.duration_since(t).ok())
             .is_some_and(|age| age.as_secs() >= max_age_secs);
@@ -266,5 +290,48 @@ fn replace_file(replaced: &Path, replacement: &Path) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_only_removes_owned_target_temps() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("cs2_video.txt");
+        let owned = dir.path().join(".cs2_video.txt.123.456.0.tmp");
+        let unrelated = [
+            ".other-tool.tmp",
+            ".other.txt.123.456.0.tmp",
+            ".cs2_video.txt.bad.456.0.tmp",
+            ".cs2_video.txt.123.456.tmp",
+            ".cs2_video.txt.123.456.0.extra.tmp",
+            ".cs2_video.txt.123..0.tmp",
+        ];
+        fs::write(&owned, b"owned").unwrap();
+        for name in unrelated {
+            fs::write(dir.path().join(name), b"keep").unwrap();
+        }
+        let folder = dir.path().join(".cs2_video.txt.123.456.1.tmp");
+        fs::create_dir(&folder).unwrap();
+        sweep_stale_temp_files(&target, u64::MAX);
+        assert!(owned.exists(), "fresh owned temp must survive");
+        sweep_stale_temp_files(&target, 0);
+        assert!(!owned.exists());
+        for name in unrelated {
+            assert!(dir.path().join(name).exists(), "deleted {name}");
+        }
+        assert!(folder.is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unicode_windows_paths_share_comparison_and_key() {
+        let upper = r"C:\Équipe\cs2_video.txt";
+        let lower = r"C:\équipe\cs2_video.txt";
+        assert!(paths_equal_ci(upper, lower));
+        assert_eq!(path_key(Path::new(upper)), path_key(Path::new(lower)));
     }
 }

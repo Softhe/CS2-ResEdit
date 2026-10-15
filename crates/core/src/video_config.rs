@@ -428,10 +428,8 @@ impl VideoConfigService {
         for backup in backup_paths(path)?.iter().skip(5) {
             fs::remove_file(backup)?;
         }
-        if let Some(directory) = path.parent() {
-            // Opportunistic cleanup of crash leftovers; never fails the update.
-            fsutil::sweep_stale_temp_files(directory, 7 * 24 * 60 * 60);
-        }
+        // Opportunistic cleanup of crash leftovers for this target only.
+        fsutil::sweep_stale_temp_files(path, 7 * 24 * 60 * 60);
         Ok(())
     }
 }

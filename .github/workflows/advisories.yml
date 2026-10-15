@@ -24,7 +24,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0766183f3c1f517da0e5d2d1ed37d8bdb9b0d # v1
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.98.0
 

@@ -55,6 +55,7 @@ impl ResEditApp {
     }
 
     pub(super) fn adopt_accounts(&mut self, root_count: usize, discovered: Vec<SteamAccount>) {
+        let prior_operation = self.operation_status.clone();
         let prior_path = self.selected_path.clone();
         let had_pending_changes = self.has_pending_changes();
         self.accounts.clear();
@@ -109,12 +110,12 @@ impl ResEditApp {
         }
         self.selected_account = selection;
         if self.accounts.is_empty() {
-            self.set_status(
+            self.set_background_status(
                 "No Steam accounts found. Use Browse to select cs2_video.txt.",
                 false,
             );
         } else {
-            self.set_status("Steam accounts refreshed.", false);
+            self.set_background_status("Steam accounts refreshed.", false);
         }
         // Load the newly selected account (mirrors AccountChanged via selection).
         if let Some(index) = self.selected_account {
@@ -125,7 +126,10 @@ impl ResEditApp {
                         fsutil::paths_equal_ci(&account.config_path, &prior.to_string_lossy())
                     })
                 {
-                    self.set_status("Steam accounts refreshed. Unsaved changes kept.", false);
+                    self.set_background_status(
+                        "Steam accounts refreshed. Unsaved changes kept.",
+                        false,
+                    );
                 } else if !self.load_path(Some(PathBuf::from(&account.config_path))) {
                     self.selected_account = prior_path.as_ref().and_then(|prior| {
                         self.accounts.iter().position(|entry| {
@@ -146,17 +150,22 @@ impl ResEditApp {
                     } else {
                         format!("Steam accounts refreshed. {loaded}")
                     };
-                    self.set_status(&combined, warning);
+                    self.set_background_status(&combined, warning);
                 }
             } else {
                 self.load_path(None);
-                self.set_status(
+                self.set_background_status(
                     "This account does not have a CS2 video configuration.",
                     true,
                 );
             }
         } else {
             self.load_path(None);
+        }
+        if self.selected_path == prior_path {
+            if let Some((message, warning)) = prior_operation {
+                self.set_operation_status(&message, warning);
+            }
         }
     }
 
@@ -416,7 +425,7 @@ impl ResEditApp {
                 // failure, external change, preferences warning) with a
                 // routine pending-state refresh; background display changes
                 // and keystrokes both funnel through here.
-                if !self.status_warning {
+                if self.operation_status.is_none() && !self.status_warning {
                     self.status = if differs {
                         "Review the pending settings, then apply the change.".to_string()
                     } else {
@@ -469,7 +478,7 @@ impl ResEditApp {
             return;
         };
         let Some(snapshot) = self.snapshot.as_ref() else {
-            self.set_status("Reload the configuration before applying changes.", true);
+            self.set_operation_status("Reload the configuration before applying changes.", true);
             return;
         };
         match self
@@ -487,7 +496,7 @@ impl ResEditApp {
                         self.reset_pending();
                     }
                     Err(err) => {
-                        self.set_status(
+                        self.set_operation_status(
                             &err.context("Verifying the updated configuration failed")
                                 .to_string(),
                             true,
@@ -502,12 +511,18 @@ impl ResEditApp {
                                 .file_name()
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or(backup);
-                            self.set_status(&format!("Changes applied. Backup: {name}"), false);
+                            self.set_operation_status(
+                                &format!("Changes applied. Backup: {name}"),
+                                false,
+                            );
                         }
-                        None => self.set_status("Changes applied.", false),
+                        None => self.set_operation_status("Changes applied.", false),
                     }
                 } else {
-                    self.set_status("The configuration already has these settings.", false);
+                    self.set_operation_status(
+                        "The configuration already has these settings.",
+                        false,
+                    );
                 }
             }
             Err(CoreError::ExternalChange(message)) => {
@@ -515,9 +530,9 @@ impl ResEditApp {
                     snapshot.state,
                     self.configs.read(&path),
                 ));
-                self.set_status(&message, true);
+                self.set_operation_status(&message, true);
             }
-            Err(err) => self.set_status(&err.to_string(), true),
+            Err(err) => self.set_operation_status(&err.to_string(), true),
         }
     }
 
@@ -546,7 +561,7 @@ impl ResEditApp {
             return;
         };
         let Some(snapshot) = self.snapshot.as_ref() else {
-            self.set_status("Reload the configuration before restoring a backup.", true);
+            self.set_operation_status("Reload the configuration before restoring a backup.", true);
             return;
         };
         match self
@@ -559,9 +574,12 @@ impl ResEditApp {
                 self.load_path(Some(config));
                 if self.original.is_some() {
                     if let Some(warning) = self.preferences.warning.clone() {
-                        self.set_status(&format!("Backup restored successfully. {warning}"), true);
+                        self.set_operation_status(
+                            &format!("Backup restored successfully. {warning}"),
+                            true,
+                        );
                     } else {
-                        self.set_status("Backup restored successfully.", false);
+                        self.set_operation_status("Backup restored successfully.", false);
                     }
                 }
             }
@@ -571,11 +589,11 @@ impl ResEditApp {
                     self.configs.read(&config),
                 ));
                 self.confirm_restore = false;
-                self.set_status(&message, true);
+                self.set_operation_status(&message, true);
             }
             Err(err) => {
                 self.confirm_restore = false;
-                self.set_status(&err.to_string(), true);
+                self.set_operation_status(&err.to_string(), true);
             }
         }
     }

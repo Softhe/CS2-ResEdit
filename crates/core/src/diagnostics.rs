@@ -145,5 +145,22 @@ fn os_description() -> String {
 }
 
 fn runtime_description() -> String {
-    format!("Rust {}", env!("CARGO_PKG_RUST_VERSION"))
+    format!(
+        "Rust (minimum supported version: {})",
+        env!("CARGO_PKG_RUST_VERSION")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn runtime_labels_package_rust_version_as_minimum() {
+        assert_eq!(
+            super::runtime_description(),
+            format!(
+                "Rust (minimum supported version: {})",
+                env!("CARGO_PKG_RUST_VERSION")
+            )
+        );
+    }
 }

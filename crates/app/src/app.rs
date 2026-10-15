@@ -40,6 +40,24 @@ struct PendingScan<T> {
     generation: u64,
 }
 
+// Keep at most two workers per scan type, including abandoned workers.
+// A blocked OS call cannot be cancelled safely; retain its receiver until exit.
+fn prepare_scan<T>(
+    active: &mut Option<PendingScan<T>>,
+    retired: &mut Vec<mpsc::Receiver<T>>,
+) -> bool {
+    retired.retain(|receiver| matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    if active.as_ref().is_some_and(|scan| !scan.timeout_reported)
+        || retired.len() + usize::from(active.is_some()) >= 2
+    {
+        return false;
+    }
+    if let Some(scan) = active.take() {
+        retired.push(scan.receiver);
+    }
+    true
+}
+
 type AccountScanResult = (usize, Vec<SteamAccount>, Vec<String>);
 
 pub struct ResEditApp {
@@ -76,6 +94,7 @@ pub struct ResEditApp {
     create_backup: bool,
     status: String,
     status_warning: bool,
+    operation_status: Option<(String, bool)>,
     external_change_notice: Option<String>,
     validation: String,
     availability: String,
@@ -104,10 +123,10 @@ pub struct ResEditApp {
     account_scan: Option<PendingScan<AccountScanResult>>,
     display_scan: Option<PendingScan<Vec<DisplayInfo>>>,
     scan_notice: Option<(String, Instant)>,
-    /// Generation-tagged scan coordinator sequences. A refresh that finds a
-    /// timed-out scan replaces it with a newer generation; late results from
-    /// the abandoned generation are dropped on arrival so a hung worker can
-    /// never wedge future scans or overwrite newer state.
+    retired_account_scans: Vec<mpsc::Receiver<AccountScanResult>>,
+    retired_display_scans: Vec<mpsc::Receiver<Vec<DisplayInfo>>>,
+    /// Generation-tagged scan coordinator sequences. One replacement is allowed
+    /// while an earlier worker is stalled; stale results are discarded.
     account_scan_seq: u64,
     display_scan_seq: u64,
 }
@@ -158,6 +177,7 @@ impl ResEditApp {
             create_backup: true,
             status: String::new(),
             status_warning: false,
+            operation_status: None,
             external_change_notice: None,
             validation: String::new(),
             availability: String::new(),
@@ -180,6 +200,8 @@ impl ResEditApp {
             account_scan: None,
             display_scan: None,
             scan_notice: None,
+            retired_account_scans: Vec::new(),
+            retired_display_scans: Vec::new(),
             account_scan_seq: 0,
             display_scan_seq: 0,
         }
@@ -218,13 +240,8 @@ impl ResEditApp {
     }
 
     fn refresh_accounts(&mut self) {
-        // A scan that already timed out is abandoned: bumping the generation
-        // orphans its late result (dropped in `poll_scans`) and lets a fresh
-        // worker proceed instead of wedging refreshes forever.
-        if let Some(scan) = &self.account_scan {
-            if !scan.timeout_reported {
-                return;
-            }
+        if !prepare_scan(&mut self.account_scan, &mut self.retired_account_scans) {
+            return;
         }
         let steam_root = self.steam_root.clone();
         let (sender, receiver) = mpsc::channel();
@@ -252,10 +269,8 @@ impl ResEditApp {
     }
 
     fn refresh_displays(&mut self) {
-        if let Some(scan) = &self.display_scan {
-            if !scan.timeout_reported {
-                return;
-            }
+        if !prepare_scan(&mut self.display_scan, &mut self.retired_display_scans) {
+            return;
         }
         let provider = Arc::clone(&self.display_provider);
         let (sender, receiver) = mpsc::channel();
@@ -318,7 +333,7 @@ impl ResEditApp {
                         self.adopt_accounts(root_count, accounts);
                         self.note_scan("Steam account scan", elapsed);
                         if !warnings.is_empty() {
-                            self.set_status("Steam accounts were found, but account names could not be read from one or more Steam installations.", true);
+                            self.set_background_status("Steam accounts were found, but account names could not be read from one or more Steam installations.", true);
                         }
                     }
                 }
@@ -326,7 +341,7 @@ impl ResEditApp {
                     let current = scan.generation == self.account_scan_seq;
                     self.account_scan = None;
                     if current {
-                        self.set_status("Steam account scan failed.", true);
+                        self.set_background_status("Steam account scan failed.", true);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -349,7 +364,7 @@ impl ResEditApp {
                     let current = scan.generation == self.display_scan_seq;
                     self.display_scan = None;
                     if current {
-                        self.set_status("Display scan failed.", true);
+                        self.set_background_status("Display scan failed.", true);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -358,13 +373,16 @@ impl ResEditApp {
         if let Some(scan) = &mut self.account_scan {
             if !scan.timeout_reported && scan.started.elapsed() >= SCAN_TIMEOUT {
                 scan.timeout_reported = true;
-                self.set_status("Steam account scan is taking longer than expected.", true);
+                self.set_background_status(
+                    "Steam account scan is taking longer than expected.",
+                    true,
+                );
             }
         }
         if let Some(scan) = &mut self.display_scan {
             if !scan.timeout_reported && scan.started.elapsed() >= SCAN_TIMEOUT {
                 scan.timeout_reported = true;
-                self.set_status("Display scan is taking longer than expected.", true);
+                self.set_background_status("Display scan is taking longer than expected.", true);
             }
         }
         if self
@@ -426,8 +444,20 @@ impl ResEditApp {
     }
 
     fn set_status(&mut self, message: &str, warning: bool) {
+        self.operation_status = None;
         self.status = message.to_string();
         self.status_warning = warning;
+    }
+
+    fn set_operation_status(&mut self, message: &str, warning: bool) {
+        self.set_status(message, warning);
+        self.operation_status = Some((message.to_string(), warning));
+    }
+
+    fn set_background_status(&mut self, message: &str, warning: bool) {
+        if self.operation_status.is_none() {
+            self.set_status(message, warning);
+        }
     }
 
     fn show_main_cards(&mut self, ui: &mut egui::Ui) -> [(egui::Rect, egui::Rect); 2] {
@@ -920,6 +950,97 @@ fn describe_video_state(state: VideoConfigState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_results_survive_edits_displays_and_account_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("cs2_video.txt");
+        std::fs::write(&config, "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n").unwrap();
+        let mut app = ResEditApp::new(Some(dir.path().join("settings.json")), None, None);
+        app.load_path(Some(config.clone()));
+        app.custom_width = "1280".into();
+        app.pending_changed();
+        app.apply();
+        assert!(app.status.starts_with("Changes applied."));
+        let applied = app.status.clone();
+        app.custom_width = "1600".into();
+        app.pending_changed();
+        app.display_changed();
+        app.adopt_accounts(0, vec![custom_account(&config)]);
+        assert_eq!(app.status, applied);
+        app.open_backups();
+        app.selected_backup = Some(0);
+        app.restore_selected_backup();
+        assert!(app.status.starts_with("Backup restored successfully."));
+        let restored = app.status.clone();
+        app.custom_width = "1600".into();
+        app.pending_changed();
+        app.adopt_displays(Vec::new());
+        app.adopt_accounts(0, vec![custom_account(&config)]);
+        assert_eq!(app.status, restored);
+        std::fs::write(&config, "external edit").unwrap();
+        app.apply();
+        assert!(app.status_warning);
+        let failure = app.status.clone();
+        let (sender, receiver) = mpsc::channel();
+        app.account_scan = Some(PendingScan {
+            receiver,
+            started: Instant::now(),
+            timeout_reported: false,
+            generation: app.account_scan_seq,
+        });
+        sender
+            .send((
+                0,
+                vec![custom_account(&config)],
+                vec!["name unavailable".into()],
+            ))
+            .unwrap();
+        app.poll_scans();
+        assert_eq!(app.status, failure);
+        assert!(app.has_pending_changes());
+    }
+
+    #[test]
+    fn repeated_timeouts_bound_workers_and_reclaim_completed_slots() {
+        let mut app = ResEditApp::new(None, None, None);
+        let (first, receiver) = mpsc::channel();
+        app.display_scan = Some(PendingScan {
+            receiver,
+            started: Instant::now() - SCAN_TIMEOUT,
+            timeout_reported: true,
+            generation: 0,
+        });
+        // Preserve the first worker and allow exactly one replacement.
+        assert!(prepare_scan(
+            &mut app.display_scan,
+            &mut app.retired_display_scans
+        ));
+        let (second, receiver) = mpsc::channel();
+        app.display_scan = Some(PendingScan {
+            receiver,
+            started: Instant::now() - SCAN_TIMEOUT,
+            timeout_reported: true,
+            generation: 1,
+        });
+        for _ in 0..100 {
+            app.refresh_displays();
+        }
+        assert_eq!(app.retired_display_scans.len(), 1);
+        assert_eq!(app.display_scan.as_ref().unwrap().generation, 1);
+        first.send(Vec::new()).unwrap();
+        assert!(prepare_scan(
+            &mut app.display_scan,
+            &mut app.retired_display_scans
+        ));
+        assert_eq!(app.retired_display_scans.len(), 1);
+        drop(second);
+        assert!(prepare_scan(
+            &mut app.display_scan,
+            &mut app.retired_display_scans
+        ));
+        assert!(app.retired_display_scans.is_empty());
+    }
 
     #[test]
     fn fixed_columns_have_hard_bounds_and_a_right_edge_gutter() {
