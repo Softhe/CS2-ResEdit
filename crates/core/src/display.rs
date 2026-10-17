@@ -24,111 +24,6 @@ impl DisplayModeProvider for DisplayProvider {
 }
 
 #[cfg(windows)]
-const ATTACHED_TO_DESKTOP: u32 = 0x1;
-#[cfg(windows)]
-const PRIMARY_DEVICE: u32 = 0x4;
-#[cfg(windows)]
-const CURRENT_SETTINGS: i32 = -1;
-
-// Compile-time guards: the FFI structs must match the native
-// DISPLAY_DEVICEW (840 bytes) and DEVMODEW (220 bytes) layouts exactly.
-#[cfg(windows)]
-const _: () = assert!(std::mem::size_of::<DisplayDeviceW>() == 840);
-#[cfg(windows)]
-const _: () = assert!(std::mem::size_of::<DevModeW>() == 220);
-#[cfg(windows)]
-const _: () = assert!(std::mem::align_of::<DisplayDeviceW>() == 4);
-#[cfg(windows)]
-const _: () = assert!(std::mem::align_of::<DevModeW>() == 4);
-
-#[cfg(windows)]
-#[repr(C)]
-struct DisplayDeviceW {
-    cb: u32,
-    device_name: [u16; 32],
-    device_string: [u16; 128],
-    state_flags: u32,
-    _device_id: [u16; 128],
-    _device_key: [u16; 128],
-}
-
-#[cfg(windows)]
-#[repr(C)]
-struct DevModeW {
-    device_name: [u16; 32],
-    spec_version: u16,
-    driver_version: u16,
-    size: u16,
-    driver_extra: u16,
-    _fields: u32,
-    // Union: dmPosition (POINTL: 2x i32) + display orientation/fixed output (2x u32)
-    _union_a: [u32; 4],
-    _color_duplex_yres_ttoption_collate: [u16; 5],
-    _form_name: [u16; 32],
-    _log_pixels: u16,
-    bits_per_pel: u32,
-    pels_width: u32,
-    pels_height: u32,
-    _display_flags_or_nup: u32,
-    _display_frequency: u32,
-    _icm_method: u32,
-    _icm_intent: u32,
-    _media_type: u32,
-    _dither_type: u32,
-    _reserved1: u32,
-    _reserved2: u32,
-    _panning_width: u32,
-    _panning_height: u32,
-}
-
-#[cfg(windows)]
-impl DevModeW {
-    fn blank() -> Self {
-        Self {
-            device_name: [0; 32],
-            spec_version: 0,
-            driver_version: 0,
-            size: std::mem::size_of::<Self>() as u16,
-            driver_extra: 0,
-            _fields: 0,
-            _union_a: [0; 4],
-            _color_duplex_yres_ttoption_collate: [0; 5],
-            _form_name: [0; 32],
-            _log_pixels: 0,
-            bits_per_pel: 0,
-            pels_width: 0,
-            pels_height: 0,
-            _display_flags_or_nup: 0,
-            _display_frequency: 0,
-            _icm_method: 0,
-            _icm_intent: 0,
-            _media_type: 0,
-            _dither_type: 0,
-            _reserved1: 0,
-            _reserved2: 0,
-            _panning_width: 0,
-            _panning_height: 0,
-        }
-    }
-}
-
-#[cfg(windows)]
-#[link(name = "user32")]
-extern "system" {
-    fn EnumDisplayDevicesW(
-        lp_device: *const u16,
-        i_dev_num: u32,
-        lp_display_device: *mut DisplayDeviceW,
-        dw_flags: u32,
-    ) -> i32;
-    fn EnumDisplaySettingsW(
-        lpsz_device_name: *const u16,
-        i_mode_num: i32,
-        lp_dev_mode: *mut DevModeW,
-    ) -> i32;
-}
-
-#[cfg(windows)]
 fn wide_to_string(buf: &[u16]) -> String {
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(&buf[..end])
@@ -136,30 +31,38 @@ fn wide_to_string(buf: &[u16]) -> String {
 
 #[cfg(windows)]
 fn enumerate_windows_displays() -> Vec<DisplayInfo> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        EnumDisplayDevicesW, EnumDisplaySettingsW, DEVMODEW, DISPLAY_DEVICEW,
+        DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICE_PRIMARY_DEVICE, ENUM_CURRENT_SETTINGS,
+    };
+
+    fn blank_mode() -> DEVMODEW {
+        DEVMODEW {
+            dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+            ..DEVMODEW::default()
+        }
+    }
+
     let monitor_names = active_monitor_names();
     let mut displays: Vec<DisplayInfo> = Vec::new();
     let mut index: u32 = 0;
     loop {
-        let mut device = DisplayDeviceW {
-            cb: std::mem::size_of::<DisplayDeviceW>() as u32,
-            device_name: [0; 32],
-            device_string: [0; 128],
-            state_flags: 0,
-            _device_id: [0; 128],
-            _device_key: [0; 128],
+        let mut device = DISPLAY_DEVICEW {
+            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..DISPLAY_DEVICEW::default()
         };
-        let ok =
-            unsafe { EnumDisplayDevicesW(std::ptr::null(), index, &mut device as *mut _, 0) } != 0;
+        // `device.cb` is initialized; a null adapter name enumerates adapters.
+        let ok = unsafe { EnumDisplayDevicesW(std::ptr::null(), index, &mut device, 0) } != 0;
         if !ok {
             break;
         }
         index += 1;
-        if (device.state_flags & ATTACHED_TO_DESKTOP) == 0 {
+        if (device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0 {
             continue;
         }
 
-        let device_name = wide_to_string(&device.device_name);
-        let friendly = wide_to_string(&device.device_string);
+        let device_name = wide_to_string(&device.DeviceName);
+        let friendly = wide_to_string(&device.DeviceString);
         let friendly = if friendly.trim().is_empty() {
             format!("Display {}", displays.len() + 1)
         } else {
@@ -170,43 +73,42 @@ fn enumerate_windows_displays() -> Vec<DisplayInfo> {
             .map(|names| names.join(" / "))
             .unwrap_or(friendly);
         // NUL-terminated device name for the settings query.
-        let mut name_nul: Vec<u16> = device.device_name.to_vec();
+        let mut name_nul: Vec<u16> = device.DeviceName.to_vec();
         if !name_nul.contains(&0) {
             name_nul.push(0);
         }
 
         let mut modes_set = std::collections::BTreeSet::new();
-        let mut mode_index: i32 = 0;
+        let mut mode_index: u32 = 0;
         loop {
-            let mut mode = DevModeW::blank();
-            let ok =
-                unsafe { EnumDisplaySettingsW(name_nul.as_ptr(), mode_index, &mut mode as *mut _) }
-                    != 0;
+            let mut mode = blank_mode();
+            // `name_nul` is NUL-terminated and `mode.dmSize` is initialized.
+            let ok = unsafe { EnumDisplaySettingsW(name_nul.as_ptr(), mode_index, &mut mode) } != 0;
             if !ok {
                 break;
             }
             mode_index += 1;
-            if mode.pels_width >= 320 && mode.pels_height >= 200 {
-                modes_set.insert((mode.pels_width as i32, mode.pels_height as i32));
+            if mode.dmPelsWidth >= 320 && mode.dmPelsHeight >= 200 {
+                modes_set.insert((mode.dmPelsWidth as i32, mode.dmPelsHeight as i32));
             }
         }
 
-        let mut current = DevModeW::blank();
-        let has_current = unsafe {
-            EnumDisplaySettingsW(name_nul.as_ptr(), CURRENT_SETTINGS, &mut current as *mut _)
-        } != 0;
+        let mut current = blank_mode();
+        let has_current =
+            unsafe { EnumDisplaySettingsW(name_nul.as_ptr(), ENUM_CURRENT_SETTINGS, &mut current) }
+                != 0;
 
         displays.push(DisplayInfo {
             device_name,
             friendly_name: friendly,
-            is_primary: (device.state_flags & PRIMARY_DEVICE) != 0,
+            is_primary: (device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0,
             current_width: if has_current {
-                current.pels_width as i32
+                current.dmPelsWidth as i32
             } else {
                 0
             },
             current_height: if has_current {
-                current.pels_height as i32
+                current.dmPelsHeight as i32
             } else {
                 0
             },

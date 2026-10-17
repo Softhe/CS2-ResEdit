@@ -7,25 +7,6 @@ use std::path::Path;
 pub struct DiagnosticService;
 
 impl DiagnosticService {
-    pub fn create(
-        configs: &VideoConfigService,
-        application_version: &str,
-        displays: &[DisplayInfo],
-        steam_root_count: usize,
-        account_count: usize,
-        config_path: Option<&Path>,
-    ) -> DiagnosticReport {
-        Self::create_with_options(
-            configs,
-            application_version,
-            displays,
-            steam_root_count,
-            account_count,
-            config_path,
-            false,
-        )
-    }
-
     pub fn create_with_options(
         configs: &VideoConfigService,
         application_version: &str,

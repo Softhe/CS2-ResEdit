@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use crate::theme::ThemePalette;
 
 mod controller;
+mod dialogs;
 mod panels;
 #[cfg(test)]
 use panels::{preview_rectangle, preview_viewport};
@@ -29,6 +30,9 @@ const DISPLAY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SLOW_SCAN_THRESHOLD: Duration = Duration::from_millis(150);
 const SCAN_NOTICE_DURATION: Duration = Duration::from_secs(4);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Passes per frame: one to draw, then corrections while the equal-height
+/// cards settle after content or style changes (see `show_main_cards`).
+const CARD_PASSES: std::num::NonZeroUsize = std::num::NonZeroUsize::new(3).unwrap();
 
 /// Background enumeration request. Only the newest request is polled; a
 /// timed-out request it replaced moves to the retired list, whose late
@@ -147,6 +151,8 @@ pub struct ResEditApp {
     scan_notice: Option<(String, Instant)>,
     retired_account_scans: Vec<mpsc::Receiver<AccountScanResult>>,
     retired_display_scans: Vec<mpsc::Receiver<Vec<DisplayInfo>>>,
+    /// Shared card height from the previous pass (see `show_main_cards`).
+    card_height: f32,
     /// Prompt waiting for the user before a destructive or risky action.
     confirmation: Option<Confirmation>,
     /// Reports whether CS2 is running (`None` when unknown). Replaced in tests.
@@ -229,6 +235,7 @@ impl ResEditApp {
             scan_notice: None,
             retired_account_scans: Vec::new(),
             retired_display_scans: Vec::new(),
+            card_height: 0.0,
             confirmation: None,
             game_probe: crate::system::game_running,
             high_contrast_probe: crate::system::high_contrast_enabled,
@@ -496,57 +503,40 @@ impl ResEditApp {
         }
     }
 
+    /// Draws the settings and preview cards side by side at equal height in
+    /// a single pass. Each card reports its natural height; when the tallest
+    /// one changes, the pass is discarded and egui redraws the frame with the
+    /// new shared height. Input is consumed only by the first pass, so a
+    /// click is never processed twice.
     fn show_main_cards(&mut self, ui: &mut egui::Ui) -> [(egui::Rect, egui::Rect); 2] {
         let bounds = ui.available_rect_before_wrap();
         let (left_rect, right_rect) = fixed_column_rects(bounds, ui.spacing().item_spacing.x, 16.0);
-        // Measurement must not share interactive IDs or process clicks. Otherwise
-        // a dropdown click toggles its popup in both passes and immediately closes it.
-        let measured_left = ui
-            .scope_builder(
-                egui::UiBuilder::new()
-                    .id_salt("measure_settings")
-                    .invisible()
-                    .max_rect(left_rect)
-                    .sizing_pass()
-                    .layout(egui::Layout::top_down(egui::Align::Min)),
-                |ui| self.settings_card(ui, 0.0),
-            )
+        let shared_height = self.card_height;
+        let column = |rect| {
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min))
+        };
+        let (left_actual, left_natural) = ui
+            .scope_builder(column(left_rect), |ui| {
+                ui.set_clip_rect(left_rect);
+                self.settings_card(ui, shared_height)
+            })
             .inner;
-        let measured_right = ui
-            .scope_builder(
-                egui::UiBuilder::new()
-                    .id_salt("measure_preview")
-                    .invisible()
-                    .max_rect(right_rect)
-                    .sizing_pass()
-                    .layout(egui::Layout::top_down(egui::Align::Min)),
-                |ui| self.summary_card(ui, 0.0, None),
-            )
+        let (right_actual, right_natural) = ui
+            .scope_builder(column(right_rect), |ui| {
+                ui.set_clip_rect(right_rect);
+                self.summary_card(ui, shared_height)
+            })
             .inner;
-        let shared_height = measured_left.height().max(measured_right.0.height());
-        let left_actual = ui
-            .scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(left_rect)
-                    .layout(egui::Layout::top_down(egui::Align::Min)),
-                |ui| {
-                    ui.set_clip_rect(left_rect);
-                    self.settings_card(ui, shared_height)
-                },
-            )
-            .inner;
-        let right_actual = ui
-            .scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(right_rect)
-                    .layout(egui::Layout::top_down(egui::Align::Min)),
-                |ui| {
-                    ui.set_clip_rect(right_rect);
-                    self.summary_card(ui, shared_height, Some(measured_right.1))
-                        .0
-                },
-            )
-            .inner;
+        let natural = left_natural.max(right_natural);
+        if (natural - shared_height).abs() > 0.5 {
+            self.card_height = natural;
+            ui.ctx().request_discard("card heights changed");
+            // Style changes can need more passes than `CARD_PASSES` allows;
+            // the next frame then finishes equalizing.
+            ui.ctx().request_repaint();
+        }
         [(left_rect, left_actual), (right_rect, right_actual)]
     }
 }
@@ -554,6 +544,7 @@ impl ResEditApp {
 impl eframe::App for ResEditApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.initialized {
+            ctx.options_mut(|options| options.max_passes = CARD_PASSES);
             self.initialize_data();
         }
         if !self.theme_applied {
@@ -601,162 +592,8 @@ impl eframe::App for ResEditApp {
         {
             self.request_apply();
         }
-        let palette = self.palette;
-
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.heading("CS2 ResEdit");
-                    ui.label("Tune your display settings safely");
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let previous = self.preferences.theme;
-                    if palette.high_contrast {
-                        ui.label("High Contrast")
-                            .on_hover_text("Theme follows Windows High Contrast settings");
-                    } else {
-                        ui.add_enabled_ui(!modal_open, |ui| {
-                            let response = egui::ComboBox::from_id_salt("ui_theme")
-                                .selected_text(self.preferences.theme.label())
-                                .width(105.0)
-                                .show_ui(ui, |ui| {
-                                    for theme in UiTheme::ALL {
-                                        ui.selectable_value(
-                                            &mut self.preferences.theme,
-                                            theme,
-                                            theme.label(),
-                                        );
-                                    }
-                                });
-                            response.response.clone().labelled_by(ui.label("Theme").id);
-                            // Force an accessible name like `named_combo` does for
-                            // settings-card combos (egui 0.32 + Windows UIA).
-                            let theme_enabled = ui.is_enabled();
-                            response.response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::ComboBox,
-                                    theme_enabled,
-                                    "Theme",
-                                )
-                            });
-                            let current = UiTheme::ALL
-                                .iter()
-                                .position(|theme| *theme == self.preferences.theme)
-                                .unwrap_or(0);
-                            if let Some(index) = panels::wheel_selection(
-                                &response.response,
-                                current,
-                                UiTheme::ALL.len(),
-                            ) {
-                                self.preferences.theme = UiTheme::ALL[index];
-                            }
-                        });
-                    }
-                    if previous != self.preferences.theme {
-                        self.palette = ThemePalette::for_theme(self.preferences.theme);
-                        self.theme_applied = false;
-                        self.preferences = self.preferences_service().save_selection_with_theme(
-                            self.preferences.last_account_id.as_deref(),
-                            self.preferences.last_config_path.as_deref().map(Path::new),
-                            &self.preferences.recent_config_paths,
-                            self.preferences.theme,
-                            self.settings_path_opt(),
-                        );
-                        if let Some(warning) = self.preferences.warning.clone() {
-                            self.set_status(&warning, true);
-                        }
-                        ctx.request_repaint();
-                    }
-                    // Header badge doubles as sync state: file name plus
-                    // unsaved/synced marker instead of a static label.
-                    let (badge, badge_color) = match &self.selected_path {
-                        None => ("No configuration".to_string(), palette.muted),
-                        Some(path) => {
-                            let name = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| "cs2_video.txt".to_string());
-                            let marker = if self.has_pending_changes() {
-                                "• "
-                            } else {
-                                ""
-                            };
-                            (
-                                format!("{marker}{name}"),
-                                if self.has_pending_changes() {
-                                    palette.accent
-                                } else {
-                                    palette.muted
-                                },
-                            )
-                        }
-                    };
-                    ui.label(egui::RichText::new(badge).color(badge_color).strong())
-                        .on_hover_text(match &self.selected_path {
-                            None => "Select an account or browse to a config file".to_string(),
-                            Some(path) => path.to_string_lossy().to_string(),
-                        });
-                });
-            });
-        });
-
-        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
-            ui.add_enabled_ui(!modal_open, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(activity) = self.scan_activity() {
-                        ui.spinner();
-                        ui.label(activity);
-                    } else if let Some((notice, _)) = &self.scan_notice {
-                        ui.label(notice);
-                    }
-                    if self.status_warning {
-                        egui::Frame::new()
-                            .fill(palette.accent_soft)
-                            .corner_radius(egui::CornerRadius::same(6))
-                            .inner_margin(8.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("⚠ {}", self.status))
-                                        .color(palette.warning),
-                                );
-                            });
-                    } else {
-                        ui.label(egui::RichText::new(&self.status).color(palette.muted));
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let apply =
-                            ui.add_enabled(self.can_apply(), egui::Button::new("Apply changes"));
-                        if apply.clicked() {
-                            self.request_apply();
-                        }
-                        if !apply.enabled() {
-                            apply.on_disabled_hover_text(if self.original.is_none() {
-                                "Select a configuration first"
-                            } else {
-                                "Change the resolution or aspect to enable Apply"
-                            });
-                        }
-                        let reset =
-                            ui.add_enabled(self.has_pending_changes(), egui::Button::new("Reset"));
-                        if reset.clicked() {
-                            self.reset_pending();
-                        }
-                        if !reset.enabled() {
-                            reset.on_disabled_hover_text(if self.original.is_none() {
-                                "Nothing to reset yet"
-                            } else {
-                                "No pending changes to discard"
-                            });
-                        }
-                        // Always-visible reason for a disabled Apply; hover
-                        // tooltips alone exclude touch and keyboard users.
-                        if let Some(reason) = self.apply_blocker_reason() {
-                            ui.label(egui::RichText::new(reason).small().color(palette.muted));
-                        }
-                    });
-                });
-            });
-        });
+        self.header_panel(ctx, modal_open);
+        self.footer_panel(ctx, modal_open);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_enabled_ui(!modal_open, |ui| {
@@ -764,235 +601,11 @@ impl eframe::App for ResEditApp {
             });
         });
 
-        if self.show_backups {
-            let mut open = self.show_backups;
-            egui::Window::new("Configuration backups")
-                .open(&mut open)
-                .resizable(true)
-                .default_size([560.0, 420.0])
-                .min_size([420.0, 300.0])
-                .show(ctx, |ui| {
-                                if let Some(comparison) = &self.external_change_notice {
-                                    ui.colored_label(palette.warning, comparison);
-                                    ui.separator();
-                                }
-                    if self.backups.is_empty() {
-                        ui.label("No editor backups were found.");
-                        ui.label(
-                            "Apply a change with backups enabled to create one. \
-                             Backups are stored next to the configuration.",
-                        );
-                    } else {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for (index, backup) in self.backups.iter().enumerate() {
-                                let name = ResolutionCatalog::mode_name(
-                                    backup.state.aspect_mode,
-                                    backup.state.width,
-                                    backup.state.height,
-                                )
-                                .unwrap_or("?");
-                                let created = chrono::DateTime::from_timestamp_nanos(backup.created)
-                                    .with_timezone(&chrono::Local);
-                                let selected = self.selected_backup == Some(index);
-                                if ui
-                                    .selectable_label(
-                                        selected,
-                                        format!(
-                                            "{}  ·  {} × {}  ·  {name}",
-                                            created.format("%Y-%m-%d %H:%M:%S"),
-                                            backup.state.width,
-                                            backup.state.height
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    self.selected_backup = Some(index);
-                                    self.confirm_restore = false;
-                                }
-                            }
-                        });
-                        if let Some(index) = self.selected_backup {
-                            if let Some(backup) = self.backups.get(index) {
-                                let mode = ResolutionCatalog::mode_name(
-                                    backup.state.aspect_mode,
-                                    backup.state.width,
-                                    backup.state.height,
-                                )
-                                .unwrap_or("?");
-                                let created = chrono::DateTime::from_timestamp_nanos(backup.created)
-                                    .with_timezone(&chrono::Local);
-                                ui.label(format!(
-                                    "{}  ·  {} × {}  ·  {mode}",
-                                    created.format("%Y-%m-%d %H:%M:%S"),
-                                    backup.state.width,
-                                    backup.state.height
-                                ));
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(backup.path.clone()).monospace().small(),
-                                    )
-                                    .truncate(),
-                                )
-                                .on_hover_text(backup.path.clone());
-                                if let Some(original) = self.original {
-                                    if original != backup.state {
-                                        ui.label(format!(
-                                            "Current file: {} × {} · {} — restoring will overwrite these values.",
-                                            original.width,
-                                            original.height,
-                                            ResolutionCatalog::mode_name(
-                                                original.aspect_mode,
-                                                original.width,
-                                                original.height
-                                            )
-                                            .unwrap_or("?"),
-                                        ));
-                                    } else {
-                                        ui.label("Backup matches the current file.");
-                                    }
-                                }
-                            }
-                        }
-                        if self.confirm_restore {
-                            ui.label("Restore this backup? A rollback backup of the active file will be created.");
-                            ui.horizontal(|ui| {
-                                if ui.button("Confirm restore").clicked() {
-                                    self.request_restore();
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    self.confirm_restore = false;
-                                }
-                            });
-                        } else {
-                            if ui
-                                .add_enabled(
-                                    self.selected_backup.is_some(),
-                                    egui::Button::new("Restore selected"),
-                                )
-                                .clicked()
-                            {
-                                self.confirm_restore = true;
-                            }
-                        }
-                    }
-                });
-            self.show_backups &= open;
-            if !open {
-                self.confirm_restore = false;
-            }
-        }
-
-        if self.show_diagnostics {
-            let mut open = self.show_diagnostics;
-            egui::Window::new("Privacy-safe diagnostics")
-                .open(&mut open)
-                .resizable(true)
-                .default_size([640.0, 480.0])
-                .min_size([480.0, 320.0])
-                .show(ctx, |ui| {
-                    ui.label("Counts and booleans only — no names, paths, or file contents.");
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.diagnostics_summary.as_str())
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(12)
-                                .interactive(false),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.button("Copy").clicked() {
-                            ui.ctx().copy_text(self.diagnostics_summary.clone());
-                        }
-                        if ui.button("Export JSON").clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .set_file_name("cs2-resedit-diagnostics.json")
-                                .add_filter("JSON report (*.json)", &["json"])
-                                .save_file()
-                            {
-                                match export_diagnostics(&path, &self.diagnostics_json) {
-                                    Ok(()) => self.set_status(
-                                        &format!("Diagnostics exported to {}.", path.display()),
-                                        false,
-                                    ),
-                                    Err(err) => self.set_status(
-                                        &format!("Diagnostics export failed: {err}"),
-                                        true,
-                                    ),
-                                }
-                            }
-                        }
-                    });
-                });
-            self.show_diagnostics = open;
-        }
-
+        self.backups_window(ctx);
+        self.diagnostics_window(ctx);
         self.confirmation_prompt(ctx);
     }
 }
-
-impl ResEditApp {
-    /// Modal prompt for the pending `confirmation`. Esc or a click outside
-    /// cancels it.
-    fn confirmation_prompt(&mut self, ctx: &egui::Context) {
-        let Some(confirmation) = self.confirmation.clone() else {
-            return;
-        };
-        let (title, body, confirm_label, cancel_label) = match &confirmation {
-            Confirmation::DiscardEdits(action) => (
-                "Discard unsaved changes?",
-                match action {
-                    DiscardAction::SelectAccount(_) => {
-                        "The pending resolution has not been applied. Switching accounts discards it."
-                    }
-                    DiscardAction::Reload => {
-                        "The pending resolution has not been applied. Reloading the file discards it."
-                    }
-                    DiscardAction::OpenFile(_) => {
-                        "The pending resolution has not been applied. Opening another file discards it."
-                    }
-                },
-                "Discard changes",
-                "Keep editing",
-            ),
-            Confirmation::GameRunning(write) => (
-                "Counter-Strike 2 is running",
-                "CS2 can overwrite cs2_video.txt with its in-memory settings when it exits. \
-                 Close the game first, or continue anyway.",
-                match write {
-                    GuardedWrite::Apply => "Apply anyway",
-                    GuardedWrite::Restore => "Restore anyway",
-                },
-                "Cancel",
-            ),
-        };
-        let palette = self.palette;
-        let mut choice = None;
-        let response = egui::Modal::new(egui::Id::new("confirmation")).show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.heading(title);
-            ui.add(egui::Label::new(body).wrap());
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(egui::RichText::new(confirm_label).color(palette.warning))
-                    .clicked()
-                {
-                    choice = Some(true);
-                }
-                if ui.button(cancel_label).clicked() {
-                    choice = Some(false);
-                }
-            });
-        });
-        match choice {
-            Some(true) => self.confirm(),
-            Some(false) => self.cancel_confirmation(),
-            None if response.should_close() => self.cancel_confirmation(),
-            None => {}
-        }
-    }
-}
-
 fn export_diagnostics(path: &Path, json: &str) -> std::io::Result<()> {
     cs2_resedit_core::fsutil::atomic_write(path, json.as_bytes())
 }
@@ -1198,6 +811,7 @@ mod tests {
     #[test]
     fn rendered_cards_stay_inside_columns_with_long_labels() {
         let context = egui::Context::default();
+        context.options_mut(|options| options.max_passes = CARD_PASSES);
         let mut app = ResEditApp::new(None, None, None);
         app.accounts.push(custom_account(std::path::Path::new(
             "C:/a/very/long/path/that/should/not/expand/the/configuration/card/cs2_video.txt",

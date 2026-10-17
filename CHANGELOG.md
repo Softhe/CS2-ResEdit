@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The equal-height cards render in a single pass that re-runs only when their shared height changes, replacing the invisible sizing pass that drew every card twice per frame.
+- Moved the header, footer, and dialogs out of the frame loop so the whole UI is rustfmt-formatted, and split the backups window into smaller helpers.
+- Display enumeration and file replacement use `windows-sys` bindings instead of hand-written structs and `extern` blocks.
+- Removed core API that only tests used (unguarded `update`/`restore`, `save`, `save_selection`, `get_accounts`, `DiagnosticService::create`). Tests now exercise the guarded paths the app uses.
 - Apply and Restore ask for confirmation when `cs2.exe` is running, restoring the 1.x warning that the game may overwrite the file when it exits.
 - Switching accounts, reloading, or opening another file while edits are pending asks before discarding them. Re-selecting the active account no longer reloads it.
 - The palette follows Windows High Contrast at runtime instead of only the `CS2_RESEDIT_HIGH_CONTRAST` variable, so diagnostics report the real state.
