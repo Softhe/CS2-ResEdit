@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Apply and Restore ask for confirmation when `cs2.exe` is running, restoring the 1.x warning that the game may overwrite the file when it exits.
+- Switching accounts, reloading, or opening another file while edits are pending asks before discarding them. Re-selecting the active account no longer reloads it.
+- The palette follows Windows High Contrast at runtime instead of only the `CS2_RESEDIT_HIGH_CONTRAST` variable, so diagnostics report the real state.
+- A failed reload after Restore is reported instead of being hidden behind "Backup restored successfully.", and a failed re-read after Apply says the change was written.
+- Refresh is enabled again once a stalled account scan times out, matching `F5`. `Ctrl+S` requires exactly Ctrl.
+- Display and High Contrast polling runs only while the window has focus. Portrait display modes are no longer listed under 4:3.
+- Removed the redundant scan generation counters; only the newest scan is ever polled.
 - Apply and Restore now work on read-only configurations and keep them read-only afterwards. Previously Windows rejected the replacement with "Access is denied".
 - Failed Apply and Restore attempts no longer leave redundant backups that could push older backups out of retention.
 - Configurations without `setting.aspectratiomode` now load and update. The aspect family is inferred from the dimensions and the field is never added.

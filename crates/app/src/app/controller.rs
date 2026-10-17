@@ -302,6 +302,9 @@ impl ResEditApp {
         let mut supported: Vec<Resolution> = self
             .supported_modes
             .iter()
+            // Portrait modes (rotated monitors) would otherwise land in the
+            // 4:3 family as their nearest ratio.
+            .filter(|(w, h)| w >= h)
             .filter_map(|(w, h)| ResolutionCatalog::parse(&format!("{w}x{h}"), None).ok())
             .filter(|r| r.mode == mode)
             .collect();
@@ -498,9 +501,15 @@ impl ResEditApp {
                         self.reset_pending();
                     }
                     Err(err) => {
+                        let outcome = if changed {
+                            "Changes were written, but verifying"
+                        } else {
+                            "Verifying"
+                        };
                         self.set_operation_status(
-                            &err.context("Verifying the updated configuration failed")
-                                .to_string(),
+                            &format!(
+                                "{outcome} the updated configuration failed: {err}. Reload the file."
+                            ),
                             true,
                         );
                         return;
@@ -573,8 +582,15 @@ impl ResEditApp {
             Ok(_) => {
                 self.show_backups = false;
                 self.confirm_restore = false;
-                self.load_path(Some(config));
-                if self.original.is_some() {
+                // A failed reload keeps the pre-restore state loaded, so the
+                // return value (not `original`) tells whether it worked.
+                if !self.load_path(Some(config)) {
+                    let message = format!(
+                        "Backup restored, but reloading the configuration failed: {}",
+                        self.status
+                    );
+                    self.set_operation_status(&message, true);
+                } else {
                     if let Some(warning) = self.preferences.warning.clone() {
                         self.set_operation_status(
                             &format!("Backup restored successfully. {warning}"),
@@ -600,11 +616,13 @@ impl ResEditApp {
         }
     }
 
+    /// Lets the user pick a configuration. A valid pick is opened, after
+    /// confirmation when pending edits would be discarded.
     pub(super) fn browse(&mut self) {
         let Some(file) = rfd::FileDialog::new()
             .set_title("Select the CS2 video configuration")
             .add_filter("CS2 video configuration (cs2_video.txt)", &["txt"])
-            .add_filter("Text files (*.txt)", &["txt"])
+            .add_filter("All files", &["*"])
             .set_file_name("cs2_video.txt")
             .pick_file()
         else {
@@ -615,6 +633,10 @@ impl ResEditApp {
             self.set_status(&err.to_string(), true);
             return;
         }
+        self.request_discard(DiscardAction::OpenFile(file));
+    }
+
+    pub(super) fn open_file(&mut self, file: PathBuf) {
         let recent = self.preferences_service().add_recent(
             &self.preferences.recent_config_paths,
             &file.to_string_lossy(),
@@ -632,5 +654,75 @@ impl ResEditApp {
             .iter()
             .position(|a| fsutil::paths_equal_ci(&a.config_path, &file.to_string_lossy()));
         self.load_path(Some(file));
+    }
+
+    /// Applies the pending edit, asking first when CS2 is running.
+    pub(super) fn request_apply(&mut self) {
+        if self.can_apply() {
+            self.guard_write(GuardedWrite::Apply);
+        }
+    }
+
+    /// Restores the selected backup, asking first when CS2 is running.
+    pub(super) fn request_restore(&mut self) {
+        if self.selected_backup.is_some() {
+            self.guard_write(GuardedWrite::Restore);
+        }
+    }
+
+    fn guard_write(&mut self, write: GuardedWrite) {
+        // An unreadable process list is not a reason to block the write.
+        if (self.game_probe)() == Some(true) {
+            self.confirmation = Some(Confirmation::GameRunning(write));
+        } else {
+            self.run_write(write);
+        }
+    }
+
+    fn run_write(&mut self, write: GuardedWrite) {
+        match write {
+            GuardedWrite::Apply => self.apply(),
+            GuardedWrite::Restore => self.restore_selected_backup(),
+        }
+    }
+
+    /// Runs `action`, asking first when it would discard pending edits.
+    pub(super) fn request_discard(&mut self, action: DiscardAction) {
+        if matches!(action, DiscardAction::SelectAccount(index) if self.selected_account == Some(index))
+        {
+            // Re-selecting the active entry must not silently reload it.
+            return;
+        }
+        if self.has_pending_changes() {
+            self.confirmation = Some(Confirmation::DiscardEdits(action));
+        } else {
+            self.run_discard(action);
+        }
+    }
+
+    fn run_discard(&mut self, action: DiscardAction) {
+        match action {
+            DiscardAction::SelectAccount(index) if index < self.accounts.len() => {
+                self.select_account(index);
+            }
+            DiscardAction::SelectAccount(_) => {}
+            DiscardAction::Reload => {
+                self.load_path(self.selected_path.clone());
+            }
+            DiscardAction::OpenFile(file) => self.open_file(file),
+        }
+    }
+
+    /// Carries out the action behind the open prompt.
+    pub(super) fn confirm(&mut self) {
+        match self.confirmation.take() {
+            Some(Confirmation::DiscardEdits(action)) => self.run_discard(action),
+            Some(Confirmation::GameRunning(write)) => self.run_write(write),
+            None => {}
+        }
+    }
+
+    pub(super) fn cancel_confirmation(&mut self) {
+        self.confirmation = None;
     }
 }
