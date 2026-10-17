@@ -23,7 +23,7 @@ serde_json = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.2"
 os_info = "3"
-windows-sys = { version = "0.61", features = ["Win32_Devices_Display", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_Devices_Display", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

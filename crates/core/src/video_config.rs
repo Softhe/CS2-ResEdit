@@ -196,31 +196,14 @@ impl VideoConfigService {
         })
     }
 
-    pub fn update(
-        &self,
-        path: &Path,
-        resolution: &Resolution,
-        create_backup: bool,
-    ) -> Result<UpdateResult> {
-        self.update_inner(path, resolution, create_backup, None)
-    }
-
+    /// Writes `resolution` if the file still matches `snapshot`, the bytes
+    /// the caller loaded. A differing file yields `CoreError::ExternalChange`.
     pub fn update_if_unchanged(
         &self,
         path: &Path,
         resolution: &Resolution,
         create_backup: bool,
         snapshot: &VideoConfigSnapshot,
-    ) -> Result<UpdateResult> {
-        self.update_inner(path, resolution, create_backup, Some(snapshot))
-    }
-
-    fn update_inner(
-        &self,
-        path: &Path,
-        resolution: &Resolution,
-        create_backup: bool,
-        snapshot: Option<&VideoConfigSnapshot>,
     ) -> Result<UpdateResult> {
         let _write_guard = WRITE_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let full_path = fsutil::absolute(path)
@@ -245,10 +228,7 @@ impl VideoConfigService {
         // Validate before writing.
         let _ = self.parse(&changed)?;
 
-        if snapshot.is_some() {
-            let latest = fs::read(&full_path)?;
-            check_snapshot(snapshot, &latest)?;
-        }
+        check_snapshot(snapshot, &fs::read(&full_path)?)?;
 
         let backup_path = if create_backup {
             Some(
@@ -261,14 +241,14 @@ impl VideoConfigService {
 
         // Keep the comparison as close to the replacement as practical. The
         // backup is made from the checked bytes, never from a later version.
-        if snapshot.is_some() {
-            let latest = fs::read(&full_path)?;
-            if let Err(err) = check_snapshot(snapshot, &latest) {
-                if let Some(backup) = &backup_path {
-                    let _ = fs::remove_file(backup);
-                }
-                return Err(err);
+        if let Err(err) = fs::read(&full_path)
+            .map_err(CoreError::from)
+            .and_then(|latest| check_snapshot(snapshot, &latest))
+        {
+            if let Some(backup) = &backup_path {
+                let _ = fs::remove_file(backup);
             }
+            return Err(err);
         }
 
         let changed_bytes = document.encode(&changed);
@@ -359,31 +339,18 @@ impl VideoConfigService {
         Ok(backups)
     }
 
-    pub fn restore(&self, config_path: &Path, backup_path: &Path) -> Result<PathBuf> {
-        self.restore_inner(config_path, backup_path, None)
-    }
-
+    /// Restores a recognized backup if the configuration still matches
+    /// `snapshot`. Returns the rollback backup of the replaced content.
     pub fn restore_if_unchanged(
         &self,
         config_path: &Path,
         backup_path: &Path,
         snapshot: &VideoConfigSnapshot,
     ) -> Result<PathBuf> {
-        self.restore_inner(config_path, backup_path, Some(snapshot))
-    }
-
-    fn restore_inner(
-        &self,
-        config_path: &Path,
-        backup_path: &Path,
-        snapshot: Option<&VideoConfigSnapshot>,
-    ) -> Result<PathBuf> {
         let _write_guard = WRITE_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let full_config = fsutil::absolute(config_path)?;
         let full_backup = fsutil::absolute(backup_path)?;
-        if snapshot.is_some() {
-            check_snapshot(snapshot, &fs::read(&full_config)?)?;
-        }
+        check_snapshot(snapshot, &fs::read(&full_config)?)?;
         // Validate both files before touching anything.
         let _ = self.read(&full_config)?;
         let bytes = fs::read(&full_backup)?;
@@ -398,18 +365,16 @@ impl VideoConfigService {
             ));
         }
 
-        if snapshot.is_some() {
-            check_snapshot(snapshot, &fs::read(&full_config)?)?;
-        }
-
+        // The rollback copy is made from bytes that passed the snapshot check.
         let current_bytes = fs::read(&full_config)?;
+        check_snapshot(snapshot, &current_bytes)?;
         let rollback = write_backup(&full_config, &current_bytes)?;
-        if snapshot.is_some() {
-            let latest = fs::read(&full_config)?;
-            if let Err(err) = check_snapshot(snapshot, &latest) {
-                let _ = fs::remove_file(&rollback);
-                return Err(err);
-            }
+        if let Err(err) = fs::read(&full_config)
+            .map_err(CoreError::from)
+            .and_then(|latest| check_snapshot(snapshot, &latest))
+        {
+            let _ = fs::remove_file(&rollback);
+            return Err(err);
         }
         match fsutil::atomic_write(&full_config, &bytes) {
             Ok(()) => {
@@ -505,8 +470,8 @@ mod rollback_tests {
     }
 }
 
-fn check_snapshot(snapshot: Option<&VideoConfigSnapshot>, current: &[u8]) -> Result<()> {
-    if snapshot.is_some_and(|loaded| loaded.bytes != current) {
+fn check_snapshot(snapshot: &VideoConfigSnapshot, current: &[u8]) -> Result<()> {
+    if snapshot.bytes != current {
         return Err(CoreError::ExternalChange(
             "The configuration changed outside CS2 ResEdit. Reload it before applying changes."
                 .to_string(),

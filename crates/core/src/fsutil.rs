@@ -281,20 +281,7 @@ pub fn to_native(path: &Path) -> PathBuf {
 #[cfg(windows)]
 fn replace_file(replaced: &Path, replacement: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
-
-    const REPLACEFILE_IGNORE_MERGE_ERRORS: u32 = 0x2;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn ReplaceFileW(
-            lp_replaced_file_name: *const u16,
-            lp_replacement_file_name: *const u16,
-            lp_backup_file_name: *const u16,
-            dw_replace_flags: u32,
-            lp_exclude: *mut core::ffi::c_void,
-            lp_reserved: *mut core::ffi::c_void,
-        ) -> i32;
-    }
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_IGNORE_MERGE_ERRORS};
 
     // Argument order matters and is easy to get wrong:
     // lpReplacedFileName = the LIVE file being replaced (old content),
@@ -309,14 +296,15 @@ fn replace_file(replaced: &Path, replacement: &Path) -> io::Result<()> {
 
     let replaced_wide = to_wide(replaced);
     let replacement_wide = to_wide(replacement);
+    // Both names are NUL-terminated; no backup file, exclude, or reserved data.
     let ok = unsafe {
         ReplaceFileW(
             replaced_wide.as_ptr(),
             replacement_wide.as_ptr(),
             std::ptr::null(),
             REPLACEFILE_IGNORE_MERGE_ERRORS,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
         )
     };
     if ok != 0 {
