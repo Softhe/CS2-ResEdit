@@ -13,7 +13,12 @@ yanked = "warn"
 # - RUSTSEC-2026-0192 (ttf-parser unmaintained): transitive via
 #   ab_glyph <- epaint <- egui 0.32; no safe upgrade exists. Re-check when
 #   egui releases a font-stack upgrade. Exception granted 2026-10-15.
-ignore = ["RUSTSEC-2026-0192"]
+# - RUSTSEC-2026-0370 (zvariant), RUSTSEC-2026-0371 (zbus_names), and
+#   RUSTSEC-2026-0372 (zvariant_derive), all unmaintained: merged into zbus 6.
+#   Transitive via atspi <- accesskit_unix <- egui-winit 0.32 on Linux only;
+#   the Windows release does not use them and no safe upgrade exists.
+#   Re-check when egui/accesskit move to zbus 6. Exception granted 2026-10-18.
+ignore = ["RUSTSEC-2026-0192", "RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372"]
 
 [bans]
 multiple-versions = "warn"
