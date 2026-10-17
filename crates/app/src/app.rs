@@ -50,7 +50,12 @@ pub(crate) enum Confirmation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DiscardAction {
+    /// An account picked in the selector, by its current list position.
+    /// Prompts store `SelectConfig` instead.
     SelectAccount(usize),
+    /// A queued account switch, identified by its configuration path: an
+    /// account scan may rebuild and reorder the list while the prompt is open.
+    SelectConfig(String),
     Reload,
     /// A file the user picked and that already passed validation.
     OpenFile(PathBuf),
@@ -449,9 +454,21 @@ impl ResEditApp {
     /// Whether Refresh can start a scan; mirrors F5 and `prepare_scan`,
     /// which replace a scan once it has timed out.
     fn can_refresh_accounts(&self) -> bool {
-        self.account_scan
+        if self
+            .account_scan
             .as_ref()
-            .is_none_or(|scan| scan.timeout_reported)
+            .is_some_and(|scan| !scan.timeout_reported)
+        {
+            return false;
+        }
+        // Retired workers that are still blocked keep their slot; finished
+        // ones are reclaimed by `prepare_scan` (their results are discarded).
+        let blocked = self
+            .retired_account_scans
+            .iter()
+            .filter(|receiver| matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)))
+            .count();
+        blocked + usize::from(self.account_scan.is_some()) < 2
     }
     fn scans_need_fast_poll(&self) -> bool {
         self.account_scan
@@ -941,7 +958,7 @@ impl ResEditApp {
             Confirmation::DiscardEdits(action) => (
                 "Discard unsaved changes?",
                 match action {
-                    DiscardAction::SelectAccount(_) => {
+                    DiscardAction::SelectAccount(_) | DiscardAction::SelectConfig(_) => {
                         "The pending resolution has not been applied. Switching accounts discards it."
                     }
                     DiscardAction::Reload => {
@@ -1903,22 +1920,62 @@ mod tests {
         assert!(app.confirmation.is_none());
         assert!(app.has_pending_changes());
 
-        for action in [
-            DiscardAction::SelectAccount(0),
-            DiscardAction::Reload,
-            DiscardAction::OpenFile(config.clone()),
+        let config_entry = config.to_string_lossy().to_string();
+        for (action, queued) in [
+            (
+                DiscardAction::SelectAccount(0),
+                DiscardAction::SelectConfig(config_entry),
+            ),
+            (DiscardAction::Reload, DiscardAction::Reload),
+            (
+                DiscardAction::OpenFile(config.clone()),
+                DiscardAction::OpenFile(config.clone()),
+            ),
         ] {
-            app.request_discard(action.clone());
-            assert_eq!(app.confirmation, Some(Confirmation::DiscardEdits(action)));
+            app.request_discard(action);
+            assert_eq!(app.confirmation, Some(Confirmation::DiscardEdits(queued)));
             app.cancel_confirmation();
             assert!(app.has_pending_changes(), "cancel keeps the edit");
             assert_eq!(app.selected_path.as_ref(), Some(&other));
         }
 
+        // A scan that reorders the list while the prompt is open must not
+        // redirect the switch to whichever account now has that index.
         app.request_discard(DiscardAction::SelectAccount(0));
+        app.accounts.reverse();
+        app.selected_account = Some(0);
         app.confirm();
         assert_eq!(app.selected_path.as_ref(), Some(&config));
+        assert_eq!(app.selected_account, Some(1));
         assert!(!app.has_pending_changes());
+
+        // A queued account that disappeared is reported, and edits survive.
+        app.custom_width = "1280".into();
+        app.pending_changed();
+        app.request_discard(DiscardAction::SelectAccount(0));
+        app.accounts.remove(0);
+        app.selected_account = Some(0);
+        app.confirm();
+        assert_eq!(app.selected_path.as_ref(), Some(&config));
+        assert!(app.has_pending_changes());
+        assert!(app.status.contains("no longer listed"), "{}", app.status);
+    }
+
+    #[test]
+    fn refresh_stays_disabled_while_both_worker_slots_are_blocked() {
+        let mut app = ResEditApp::new(None, None, None);
+        let (blocked_sender, blocked) = mpsc::channel();
+        app.retired_account_scans.push(blocked);
+        let (_sender, receiver) = mpsc::channel();
+        app.account_scan = Some(PendingScan {
+            receiver,
+            started: Instant::now(),
+            timeout_reported: true,
+        });
+        assert!(!app.can_refresh_accounts());
+        // Once the retired worker finishes, its slot is free again.
+        drop(blocked_sender);
+        assert!(app.can_refresh_accounts());
     }
 
     #[test]
