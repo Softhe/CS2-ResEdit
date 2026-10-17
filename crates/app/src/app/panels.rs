@@ -1,9 +1,19 @@
 use super::*;
 
+const RELOAD_HINT: &str =
+    "Read the selected configuration again, including changes made outside CS2 ResEdit";
+const DISPLAY_HINT: &str =
+    "Display detection only guides preset availability; values still apply to the game config.";
+
 impl ResEditApp {
-    pub(super) fn settings_card(&mut self, ui: &mut egui::Ui, min_height: f32) -> egui::Rect {
-        card_frame(ui, self.palette).show(ui, |ui| {
-            ui.set_min_height((min_height - 22.0).max(0.0));
+    /// Draws the configuration card, stretched to `min_height`. Returns its
+    /// rect and its natural (unstretched) outer height.
+    pub(super) fn settings_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        min_height: f32,
+    ) -> (egui::Rect, f32) {
+        let response = card_frame(ui, self.palette).show(ui, |ui| {
             ui.heading("Configuration");
             ui.label("Choose an account or browse to a config file.");
             section_rule(ui, self.palette.accent);
@@ -37,18 +47,32 @@ impl ResEditApp {
                     }
                 });
             named_combo(&account_combo.response, "Steam account", ui.is_enabled());
-            if let Some(index) = wheel_selection(&account_combo.response, self.selected_account.unwrap_or(0), self.accounts.len()) {
+            if let Some(index) = wheel_selection(
+                &account_combo.response,
+                self.selected_account.unwrap_or(0),
+                self.accounts.len(),
+            ) {
                 self.request_discard(DiscardAction::SelectAccount(index));
             }
             account_combo.response.on_hover_text(selected_label);
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.can_refresh_accounts(), egui::Button::new("Refresh")).clicked() {
+                if ui
+                    .add_enabled(self.can_refresh_accounts(), egui::Button::new("Refresh"))
+                    .clicked()
+                {
                     self.refresh_accounts();
                 }
                 if ui.button("Browse").clicked() {
                     self.browse();
                 }
-                if ui.add_enabled(self.selected_path.is_some(), egui::Button::new("Reload file")).on_hover_text("Read the selected configuration again, including changes made outside CS2 ResEdit").clicked() {
+                if ui
+                    .add_enabled(
+                        self.selected_path.is_some(),
+                        egui::Button::new("Reload file"),
+                    )
+                    .on_hover_text(RELOAD_HINT)
+                    .clicked()
+                {
                     self.request_discard(DiscardAction::Reload);
                 }
             });
@@ -58,8 +82,11 @@ impl ResEditApp {
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "No valid configuration selected.".to_string());
-            ui.add(egui::Label::new(egui::RichText::new(path_label.clone()).monospace().small()).truncate())
-                .on_hover_text(path_label);
+            ui.add(
+                egui::Label::new(egui::RichText::new(path_label.clone()).monospace().small())
+                    .truncate(),
+            )
+            .on_hover_text(path_label);
 
             ui.separator();
             ui.heading("Display settings");
@@ -75,12 +102,7 @@ impl ResEditApp {
             ui.label(egui::RichText::new("TARGET DISPLAY").small().strong());
             if self.displays.is_empty() {
                 ui.label(display_label);
-                ui.label(
-                    egui::RichText::new(
-                        "Display detection only guides preset availability; values still apply to the game config.",
-                    )
-                    .small(),
-                );
+                ui.label(egui::RichText::new(DISPLAY_HINT).small());
             } else {
                 let display_combo = egui::ComboBox::from_id_salt("Target display")
                     .selected_text(display_label.clone())
@@ -102,7 +124,11 @@ impl ResEditApp {
                         }
                     });
                 named_combo(&display_combo.response, "Target display", ui.is_enabled());
-                if let Some(index) = wheel_selection(&display_combo.response, self.selected_display, self.displays.len()) {
+                if let Some(index) = wheel_selection(
+                    &display_combo.response,
+                    self.selected_display,
+                    self.displays.len(),
+                ) {
                     self.selected_display = index;
                     self.display_changed();
                 }
@@ -135,7 +161,11 @@ impl ResEditApp {
                             }
                         });
                     named_combo(&preset_combo.response, "Resolution preset", ui.is_enabled());
-                    if let Some(index) = wheel_selection(&preset_combo.response, self.selected_preset, self.preset_choices.len()) {
+                    if let Some(index) = wheel_selection(
+                        &preset_combo.response,
+                        self.selected_preset,
+                        self.preset_choices.len(),
+                    ) {
                         self.on_preset_selected(index);
                     }
                 });
@@ -154,7 +184,11 @@ impl ResEditApp {
                             }
                         });
                     named_combo(&aspect_combo.response, "Aspect ratio", ui.is_enabled());
-                    if let Some(index) = wheel_selection(&aspect_combo.response, self.aspect_index, ASPECT_LABELS.len()) {
+                    if let Some(index) = wheel_selection(
+                        &aspect_combo.response,
+                        self.aspect_index,
+                        ASPECT_LABELS.len(),
+                    ) {
                         self.on_aspect_selected(index);
                     }
                 });
@@ -164,10 +198,15 @@ impl ResEditApp {
             if self.selected_preset == 0 {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        let width_heading = ui.label(egui::RichText::new("CUSTOM WIDTH").small().strong());
+                        let width_heading =
+                            ui.label(egui::RichText::new("CUSTOM WIDTH").small().strong());
                         let mut stepped = false;
                         ui.horizontal(|ui| {
-                            if ui.small_button("-").on_hover_text("Decrease width").clicked() {
+                            if ui
+                                .small_button("-")
+                                .on_hover_text("Decrease width")
+                                .clicked()
+                            {
                                 self.custom_width = step_dim(&self.custom_width, -1, 320);
                                 stepped = true;
                             }
@@ -176,27 +215,43 @@ impl ResEditApp {
                                     egui::TextEdit::singleline(&mut self.custom_width)
                                         .hint_text("320 – 32768")
                                         .desired_width(112.0),
-                                ).labelled_by(width_heading.id)
+                                )
+                                .labelled_by(width_heading.id)
                                 .on_hover_text("Width in pixels (320 – 32768). Scroll to adjust.");
                             named_text(&response, "Custom width", ui.is_enabled());
-                            if ui.small_button("+").on_hover_text("Increase width").clicked() {
+                            if ui
+                                .small_button("+")
+                                .on_hover_text("Increase width")
+                                .clicked()
+                            {
                                 self.custom_width = step_dim(&self.custom_width, 1, 320);
                                 stepped = true;
                             }
-                            if response.changed() || stepped || wheel_dimension(&response, &mut self.custom_width, 320)
+                            if response.changed()
+                                || stepped
+                                || wheel_dimension(&response, &mut self.custom_width, 320)
                             {
                                 self.pending_changed();
                             }
                         });
                         if let Some(error) = dim_field_error(&self.custom_width, 320, 32768) {
-                            ui.label(egui::RichText::new(error).small().color(self.palette.warning));
+                            ui.label(
+                                egui::RichText::new(error)
+                                    .small()
+                                    .color(self.palette.warning),
+                            );
                         }
                     });
                     ui.vertical(|ui| {
-                        let height_heading = ui.label(egui::RichText::new("CUSTOM HEIGHT").small().strong());
+                        let height_heading =
+                            ui.label(egui::RichText::new("CUSTOM HEIGHT").small().strong());
                         let mut stepped = false;
                         ui.horizontal(|ui| {
-                            if ui.small_button("-").on_hover_text("Decrease height").clicked() {
+                            if ui
+                                .small_button("-")
+                                .on_hover_text("Decrease height")
+                                .clicked()
+                            {
                                 self.custom_height = step_dim(&self.custom_height, -1, 200);
                                 stepped = true;
                             }
@@ -205,20 +260,31 @@ impl ResEditApp {
                                     egui::TextEdit::singleline(&mut self.custom_height)
                                         .hint_text("200 – 32768")
                                         .desired_width(112.0),
-                                ).labelled_by(height_heading.id)
+                                )
+                                .labelled_by(height_heading.id)
                                 .on_hover_text("Height in pixels (200 – 32768). Scroll to adjust.");
                             named_text(&response, "Custom height", ui.is_enabled());
-                            if ui.small_button("+").on_hover_text("Increase height").clicked() {
+                            if ui
+                                .small_button("+")
+                                .on_hover_text("Increase height")
+                                .clicked()
+                            {
                                 self.custom_height = step_dim(&self.custom_height, 1, 200);
                                 stepped = true;
                             }
-                            if response.changed() || stepped || wheel_dimension(&response, &mut self.custom_height, 200)
+                            if response.changed()
+                                || stepped
+                                || wheel_dimension(&response, &mut self.custom_height, 200)
                             {
                                 self.pending_changed();
                             }
                         });
                         if let Some(error) = dim_field_error(&self.custom_height, 200, 32768) {
-                            ui.label(egui::RichText::new(error).small().color(self.palette.warning));
+                            ui.label(
+                                egui::RichText::new(error)
+                                    .small()
+                                    .color(self.palette.warning),
+                            );
                         }
                     });
                 });
@@ -239,18 +305,16 @@ impl ResEditApp {
                 &mut self.create_backup,
                 "Create a timestamped backup before applying",
             );
-        }).response.rect
+            stretch_card(ui, min_height)
+        });
+        (response.response.rect, response.inner)
     }
 
-    pub(super) fn summary_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        min_height: f32,
-        preview_height: Option<f32>,
-    ) -> (egui::Rect, f32) {
+    /// Draws the preview card, stretched to `min_height`. Returns its rect
+    /// and its natural (unstretched) outer height.
+    pub(super) fn summary_card(&mut self, ui: &mut egui::Ui, min_height: f32) -> (egui::Rect, f32) {
         let palette = self.palette;
         let response = card_frame(ui, palette).show(ui, |ui| {
-            ui.set_min_height((min_height - 22.0).max(0.0));
             ui.heading("Preview");
             ui.label("Compare current and pending settings.");
             section_rule(ui, palette.accent);
@@ -293,7 +357,7 @@ impl ResEditApp {
                         .color(palette.muted),
                 );
             }
-            let used_preview_height = self.aspect_preview(ui, preview_height);
+            self.aspect_preview(ui);
             ui.label(egui::RichText::new("LIVE ASPECT PREVIEW").small().strong());
             ui.add(
                 egui::Label::new("16:9 fills the screen; narrower modes show pillarboxing.").wrap(),
@@ -306,18 +370,17 @@ impl ResEditApp {
                     self.open_diagnostics();
                 }
             });
-            used_preview_height
+            stretch_card(ui, min_height)
         });
         (response.response.rect, response.inner)
     }
 
-    pub(super) fn aspect_preview(&self, ui: &mut egui::Ui, height: Option<f32>) -> f32 {
+    pub(super) fn aspect_preview(&self, ui: &mut egui::Ui) {
         // Fall back to the last valid shape while typing passes through
         // intermediate invalid states; Apply still requires `edit`.
         let resolution = self.edit.resolution().or(self.preview_fallback);
         // Reserve room for the caption and actions below the preview.
-        let preview_height =
-            height.unwrap_or_else(|| (ui.available_height() - 90.0).clamp(80.0, 220.0));
+        let preview_height = (ui.available_height() - 90.0).clamp(80.0, 220.0);
         let (response, painter) = ui.allocate_painter(
             egui::Vec2::new(ui.available_width(), preview_height),
             egui::Sense::hover(),
@@ -351,8 +414,20 @@ impl ResEditApp {
                 self.palette.text,
             );
         }
-        preview_height
     }
+}
+
+/// Inner margin (10 px per side) plus the 1 px stroke on both sides.
+const CARD_CHROME: f32 = 22.0;
+
+/// Measures a card's content, then stretches it to the shared height.
+/// Returns the natural outer height so the next pass can equalize the cards.
+fn stretch_card(ui: &mut egui::Ui, min_height: f32) -> f32 {
+    let content = ui.min_rect();
+    // Expand to an absolute bottom edge: `set_min_height` would measure
+    // from the cursor, below the content just drawn.
+    ui.expand_to_include_y(content.top() + (min_height - CARD_CHROME).max(0.0));
+    content.height() + CARD_CHROME
 }
 
 fn card_frame(ui: &egui::Ui, palette: ThemePalette) -> egui::Frame {
