@@ -694,7 +694,14 @@ impl ResEditApp {
             return;
         }
         if self.has_pending_changes() {
-            self.confirmation = Some(Confirmation::DiscardEdits(action));
+            let queued = match action {
+                DiscardAction::SelectAccount(index) => match self.accounts.get(index) {
+                    Some(account) => DiscardAction::SelectConfig(account.config_path.clone()),
+                    None => return,
+                },
+                other => other,
+            };
+            self.confirmation = Some(Confirmation::DiscardEdits(queued));
         } else {
             self.run_discard(action);
         }
@@ -706,6 +713,19 @@ impl ResEditApp {
                 self.select_account(index);
             }
             DiscardAction::SelectAccount(_) => {}
+            DiscardAction::SelectConfig(config_path) => {
+                match self
+                    .accounts
+                    .iter()
+                    .position(|a| fsutil::paths_equal_ci(&a.config_path, &config_path))
+                {
+                    Some(index) => self.select_account(index),
+                    None => self.set_status(
+                        "The selected account is no longer listed. Choose it again.",
+                        true,
+                    ),
+                }
+            }
             DiscardAction::Reload => {
                 self.load_path(self.selected_path.clone());
             }

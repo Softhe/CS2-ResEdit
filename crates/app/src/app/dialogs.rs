@@ -322,7 +322,7 @@ impl ResEditApp {
             Confirmation::DiscardEdits(action) => (
                 "Discard unsaved changes?",
                 match action {
-                    DiscardAction::SelectAccount(_) => {
+                    DiscardAction::SelectAccount(_) | DiscardAction::SelectConfig(_) => {
                         "The pending resolution has not been applied. Switching accounts discards it."
                     }
                     DiscardAction::Reload => {
