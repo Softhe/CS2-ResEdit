@@ -1102,11 +1102,7 @@ mod tests {
         app.selected_path = Some(std::path::PathBuf::from("C:/very/long/".repeat(30)));
         app.current_label = "Current: 1440 × 1080 · 4:3".to_owned();
         app.availability = "Reported for selected display".to_owned();
-        app.original = Some(VideoConfigState {
-            width: 1280,
-            height: 960,
-            aspect_mode: 0,
-        });
+        app.original = Some(VideoConfigState::new(1280, 960, 0));
         app.edit = EditState::Unchanged {
             resolution: Resolution::new(1280, 960, "4:3", 0),
         };
@@ -1520,16 +1516,8 @@ mod tests {
 
     #[test]
     fn external_change_comparison_distinguishes_display_and_other_edits() {
-        let loaded = VideoConfigState {
-            width: 1920,
-            height: 1080,
-            aspect_mode: 1,
-        };
-        let changed = VideoConfigState {
-            width: 1280,
-            height: 960,
-            aspect_mode: 0,
-        };
+        let loaded = VideoConfigState::new(1920, 1080, 1);
+        let changed = VideoConfigState::new(1280, 960, 0);
         let display_change = describe_external_change(loaded, Ok(changed));
         assert!(display_change.contains("Loaded: 1920 × 1080"));
         assert!(display_change.contains("On disk: 1280 × 960"));
@@ -1587,11 +1575,7 @@ mod tests {
     #[test]
     fn pending_refresh_preserves_operation_warnings() {
         let mut app = ResEditApp::new(None, None, None);
-        app.original = Some(VideoConfigState {
-            width: 1920,
-            height: 1080,
-            aspect_mode: 1,
-        });
+        app.original = Some(VideoConfigState::new(1920, 1080, 1));
         app.aspect_index = 1;
         app.custom_width = "1920".to_string();
         app.custom_height = "1080".to_string();
@@ -1630,11 +1614,7 @@ mod tests {
     #[test]
     fn invalid_dimensions_keep_footer_operation_status() {
         let mut app = ResEditApp::new(None, None, None);
-        app.original = Some(VideoConfigState {
-            width: 1920,
-            height: 1080,
-            aspect_mode: 1,
-        });
+        app.original = Some(VideoConfigState::new(1920, 1080, 1));
         app.aspect_index = 1;
         app.custom_width = "1920".to_string();
         app.custom_height = "1080".to_string();
@@ -1653,11 +1633,7 @@ mod tests {
     #[test]
     fn preview_fallback_survives_invalid_keystrokes() {
         let mut app = ResEditApp::new(None, None, None);
-        app.original = Some(VideoConfigState {
-            width: 1920,
-            height: 1080,
-            aspect_mode: 1,
-        });
+        app.original = Some(VideoConfigState::new(1920, 1080, 1));
         app.aspect_index = 1;
         app.custom_width = "1280".to_string();
         app.custom_height = "960".to_string();
@@ -1678,11 +1654,7 @@ mod tests {
     fn apply_blocker_reason_covers_all_disabled_states() {
         let mut app = ResEditApp::new(None, None, None);
         assert_eq!(app.apply_blocker_reason(), Some("Select a configuration"));
-        app.original = Some(VideoConfigState {
-            width: 1920,
-            height: 1080,
-            aspect_mode: 1,
-        });
+        app.original = Some(VideoConfigState::new(1920, 1080, 1));
         app.aspect_index = 1;
         app.custom_width = "bogus".to_string();
         app.custom_height = "1080".to_string();

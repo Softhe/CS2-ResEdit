@@ -51,22 +51,24 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         return Err(err);
     }
     drop(file);
-    match replace_or_move(&temporary, path) {
+    // Players often mark cs2_video.txt read-only so the game cannot reset
+    // it. Windows refuses to replace a read-only file, so lift the flag for
+    // the swap and put it back afterwards to keep the user's lock in place.
+    let read_only = match ReadOnlyGuard::lift(path) {
+        Ok(guard) => guard,
+        Err(err) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(err);
+        }
+    };
+    let replaced = replace_or_move(&temporary, path);
+    // Best effort: the content swap is what callers act on, and the flag was
+    // cleared moments ago, so restoring it is not expected to fail.
+    read_only.restore(path);
+    match replaced {
         Ok(()) => {
-            // Post-condition guard: after a successful swap the target must
-            // exist and the temporary must be consumed. If a replace call
-            // ever misbehaves the way the original argument-order bug did
-            // (target deleted while the temporary survives holding the old
-            // content), restore the target instead of leaving the game
-            // without its configuration.
-            if !path.exists() {
-                if temporary.exists() {
-                    fs::copy(&temporary, path)?;
-                    let _ = fs::remove_file(&temporary);
-                    return Err(io::Error::other(
-                        "the replacement did not take effect; the original file was restored",
-                    ));
-                }
+            // Post-condition: a successful swap leaves the target in place.
+            if !path.is_file() {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "target file missing after atomic replace",
@@ -86,6 +88,37 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
             Err(err)
         }
     }
+}
+
+/// Remembers whether a replacement target was read-only. On Windows the flag
+/// is cleared so `ReplaceFileW` can swap the file; on every platform it is
+/// reapplied to the new file afterwards.
+struct ReadOnlyGuard(bool);
+
+impl ReadOnlyGuard {
+    fn lift(path: &Path) -> io::Result<Self> {
+        let read_only = fs::metadata(path).is_ok_and(|m| m.permissions().readonly());
+        #[cfg(windows)]
+        if read_only {
+            set_read_only(path, false)?;
+        }
+        Ok(Self(read_only))
+    }
+
+    fn restore(self, path: &Path) {
+        if self.0 {
+            let _ = set_read_only(path, true);
+        }
+    }
+}
+
+fn set_read_only(path: &Path, read_only: bool) -> io::Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    // Only reached with `false` on Windows, where it clears the read-only
+    // attribute rather than granting write access to everyone.
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(read_only);
+    fs::set_permissions(path, permissions)
 }
 
 pub fn absolute(path: &Path) -> io::Result<PathBuf> {

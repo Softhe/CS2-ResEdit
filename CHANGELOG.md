@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Apply and Restore now work on read-only configurations and keep them read-only afterwards. Previously Windows rejected the replacement with "Access is denied".
+- Failed Apply and Restore attempts no longer leave redundant backups that could push older backups out of retention.
+- Configurations without `setting.aspectratiomode` now load and update. The aspect family is inferred from the dimensions and the field is never added.
+- Duplicate resolution entries are rejected even when the extra entry has a malformed value, and a single malformed value now reports an invalid value instead of a missing entry.
+- Backup path recognition uses the same Unicode case-insensitive comparison as the rest of the app, Steam account order is stable between refreshes, and `CS2_RESEDIT_SETTINGS_DIR` now takes effect on Windows.
+
 - Restored diagnostics schema v2 with runtime description, high-contrast state, and recognized backup count. The report stays privacy-safe: counts and booleans only.
 - Kept the preferences-load warning visible across the first configuration load instead of discarding it on save.
 - Made footer operation results sticky: background scans and keystrokes no longer overwrite apply/restore failures, and account refresh confirmations survive auto-selection.

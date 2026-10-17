@@ -27,7 +27,37 @@ impl Resolution {
 pub struct VideoConfigState {
     pub width: i32,
     pub height: i32,
+    /// Stored aspect mode, or the mode inferred from the dimensions when the
+    /// file has no `setting.aspectratiomode` entry.
     pub aspect_mode: i32,
+    /// Whether the file stores an aspect-mode entry. Files without one keep
+    /// it absent; only the dimensions are written.
+    #[serde(default = "stored_by_default")]
+    pub aspect_mode_stored: bool,
+}
+
+fn stored_by_default() -> bool {
+    true
+}
+
+impl VideoConfigState {
+    /// State for a file that stores all three entries.
+    pub const fn new(width: i32, height: i32, aspect_mode: i32) -> Self {
+        Self {
+            width,
+            height,
+            aspect_mode,
+            aspect_mode_stored: true,
+        }
+    }
+
+    /// Whether writing `resolution` would leave the stored values unchanged.
+    /// The aspect mode only counts when the file stores it.
+    pub fn matches(&self, resolution: &Resolution) -> bool {
+        self.width == resolution.width
+            && self.height == resolution.height
+            && (!self.aspect_mode_stored || self.aspect_mode == resolution.mode)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
