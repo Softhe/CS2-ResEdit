@@ -75,7 +75,9 @@ The custom width and height fields also accept wheel input. Scroll up to increas
 
 ## File changes and recovery
 
-Apply validates the required fields, prepares the update in memory, and replaces the configuration through a temporary file in the same directory. It preserves UTF-8 or UTF-16 encoding, byte-order marks, line endings, and unrelated values. Files without the retired legacy aspect-mode field remain supported.
+Apply validates the required fields, prepares the update in memory, and replaces the configuration through a temporary file in the same directory. It preserves UTF-8 or UTF-16 encoding, byte-order marks, line endings, and unrelated values. Files without the `setting.aspectratiomode` field remain supported: the editor infers the aspect family from the dimensions and writes only width and height, never adding the field.
+
+If the configuration is read-only, a common way to stop CS2 from resetting it, Apply and Restore clear the read-only flag for the replacement and set it again afterwards. A failed write removes the backup it had just created, so failed attempts do not push older backups out of retention.
 
 If another program changes the loaded file, Apply and Restore stop and report the difference. Choose Reload file, review the new values, then make your change again. These checks reduce the risk of overwriting external edits, but they cannot lock out every write from another process.
 

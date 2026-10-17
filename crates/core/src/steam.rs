@@ -138,6 +138,10 @@ impl SteamService {
                 .cmp(&a.most_recent)
                 .then(b.last_write_time.cmp(&a.last_write_time))
                 .then(a.persona_name.cmp(&b.persona_name))
+                // HashMap iteration order is random; finish with unique keys
+                // so equal accounts keep their order across refreshes.
+                .then(a.steam_id64.cmp(&b.steam_id64))
+                .then(a.config_path.cmp(&b.config_path))
         });
         (values, warnings)
     }

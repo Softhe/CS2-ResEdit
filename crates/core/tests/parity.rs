@@ -1055,3 +1055,133 @@ fn tiny_utf8_files_are_not_misdecoded_as_utf16() {
         "The configuration is not valid UTF-8 text."
     );
 }
+
+// ---------- File-safety regressions ----------
+
+fn set_read_only(path: &Path, read_only: bool) {
+    let mut permissions = fs::metadata(path).expect("metadata").permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(read_only);
+    fs::set_permissions(path, permissions).expect("set permissions");
+}
+
+#[test]
+fn read_only_configuration_is_updated_and_stays_read_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_config(dir.path());
+    set_read_only(&path, true);
+    let snapshot = service().read_snapshot(&path).expect("snapshot");
+    let resolution = ResolutionCatalog::parse("1280x960", None).expect("resolution");
+    let result = service()
+        .update_if_unchanged(&path, &resolution, true, &snapshot)
+        .expect("update read-only file");
+    assert!(result.changed);
+    let state = service().read(&path).expect("read");
+    assert_eq!(
+        (state.width, state.height, state.aspect_mode),
+        (1280, 960, 0)
+    );
+    assert!(fs::metadata(&path)
+        .expect("metadata")
+        .permissions()
+        .readonly());
+
+    let snapshot = service().read_snapshot(&path).expect("snapshot");
+    let backup = result.backup_path.expect("backup");
+    service()
+        .restore_if_unchanged(&path, Path::new(&backup), &snapshot)
+        .expect("restore into read-only file");
+    assert_eq!(service().read(&path).expect("read").width, 1920);
+    assert!(fs::metadata(&path)
+        .expect("metadata")
+        .permissions()
+        .readonly());
+    set_read_only(&path, false);
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_writes_do_not_leave_redundant_backups() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_config(dir.path());
+    let resolution = ResolutionCatalog::parse("1280x960", None).expect("resolution");
+    let first = service()
+        .update(&path, &resolution, true)
+        .expect("seed backup")
+        .backup_path
+        .expect("backup");
+    let snapshot = service().read_snapshot(&path).expect("snapshot");
+    // Readers may share the file, but replacing it needs delete access.
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0x00000001)
+        .open(&path)
+        .expect("hold configuration without delete sharing");
+    let other = ResolutionCatalog::parse("1600x900", None).expect("resolution");
+    for _ in 0..3 {
+        assert!(service()
+            .update_if_unchanged(&path, &other, true, &snapshot)
+            .is_err());
+    }
+    assert!(service()
+        .restore_if_unchanged(&path, Path::new(&first), &snapshot)
+        .is_err());
+    drop(lock);
+    let backups = service().get_backups(&path).expect("backups");
+    assert_eq!(backups.len(), 1, "only the seeded backup may remain");
+}
+
+#[test]
+fn configuration_without_aspect_mode_is_supported_and_left_without_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cs2_video.txt");
+    let original = "\"setting.defaultres\"\t\t\"2560\"\r\n\"setting.defaultresheight\"\t\t\"1440\"\r\n\"unrelated\"\t\t\"keep\"\r\n";
+    fs::write(&path, original).expect("write config");
+    let state = service().read(&path).expect("read");
+    assert_eq!(
+        (state.width, state.height, state.aspect_mode),
+        (2560, 1440, 1)
+    );
+    assert!(!state.aspect_mode_stored);
+
+    // Only the aspect differs: nothing can be stored, so nothing is written.
+    let same_size = ResolutionCatalog::parse("2560x1440", Some(0)).expect("resolution");
+    assert!(state.matches(&same_size));
+    let result = service().update(&path, &same_size, true).expect("update");
+    assert!(!result.changed);
+    assert_eq!(fs::read_to_string(&path).expect("read"), original);
+
+    let resolution = ResolutionCatalog::parse("1280x960", None).expect("resolution");
+    assert!(
+        service()
+            .update(&path, &resolution, true)
+            .expect("update")
+            .changed
+    );
+    let text = fs::read_to_string(&path).expect("read");
+    assert_eq!(
+        text,
+        original.replace("2560", "1280").replace("1440", "960")
+    );
+    assert!(!text.contains("aspectratiomode"));
+    let state = service().read(&path).expect("read");
+    assert_eq!(
+        (state.width, state.height, state.aspect_mode),
+        (1280, 960, 0)
+    );
+}
+
+#[test]
+fn malformed_duplicate_and_malformed_single_entries_are_reported() {
+    let duplicate = format!("{CONFIG}\"setting.defaultres\"\t\t\"abc\"\r\n");
+    let err = service().parse(&duplicate).expect_err("duplicate rejected");
+    assert!(err.to_string().contains("exactly one"), "{err}");
+
+    let mode_duplicate = format!("{CONFIG}\"setting.aspectratiomode\"\r\n");
+    assert!(service().parse(&mode_duplicate).is_err());
+
+    let malformed = CONFIG.replace("\"1920\"", "\"1920.0\"");
+    let err = service().parse(&malformed).expect_err("malformed rejected");
+    assert!(err.to_string().contains("is invalid"), "{err}");
+}

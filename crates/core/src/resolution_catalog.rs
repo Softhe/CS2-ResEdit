@@ -123,8 +123,15 @@ impl ResolutionCatalog {
                 "Resolution dimensions are outside the supported range.".to_string(),
             ));
         }
-        let ratio = width as f64 / height as f64;
-        Ok([(0, 4.0 / 3.0), (1, 16.0 / 9.0), (2, 16.0 / 10.0)]
+        Ok(Self::nearest_aspect_mode(width, height))
+    }
+
+    /// Aspect family whose ratio is closest to `width / height`. Unlike
+    /// `automatic_aspect_mode`, any positive dimensions are accepted, so it
+    /// can classify values already stored in a configuration file.
+    pub fn nearest_aspect_mode(width: i32, height: i32) -> i32 {
+        let ratio = f64::from(width.max(1)) / f64::from(height.max(1));
+        [(0, 4.0 / 3.0), (1, 16.0 / 9.0), (2, 16.0 / 10.0)]
             .into_iter()
             .min_by(|a, b| {
                 (a.1 - ratio)
@@ -132,8 +139,7 @@ impl ResolutionCatalog {
                     .partial_cmp(&(b.1 - ratio).abs())
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(mode, _)| mode)
-            .unwrap_or(0))
+            .map_or(0, |(mode, _)| mode)
     }
 
     pub fn mode_name(mode: i32, width: i32, height: i32) -> Result<&'static str> {
