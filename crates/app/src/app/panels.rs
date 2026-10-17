@@ -33,23 +33,23 @@ impl ResEditApp {
                         }
                     }
                     if let Some(index) = clicked {
-                        self.select_account(index);
+                        self.request_discard(DiscardAction::SelectAccount(index));
                     }
                 });
             named_combo(&account_combo.response, "Steam account", ui.is_enabled());
             if let Some(index) = wheel_selection(&account_combo.response, self.selected_account.unwrap_or(0), self.accounts.len()) {
-                self.select_account(index);
+                self.request_discard(DiscardAction::SelectAccount(index));
             }
             account_combo.response.on_hover_text(selected_label);
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.account_scan.is_none(), egui::Button::new("Refresh")).clicked() {
+                if ui.add_enabled(self.can_refresh_accounts(), egui::Button::new("Refresh")).clicked() {
                     self.refresh_accounts();
                 }
                 if ui.button("Browse").clicked() {
                     self.browse();
                 }
                 if ui.add_enabled(self.selected_path.is_some(), egui::Button::new("Reload file")).on_hover_text("Read the selected configuration again, including changes made outside CS2 ResEdit").clicked() {
-                    self.load_path(self.selected_path.clone());
+                    self.request_discard(DiscardAction::Reload);
                 }
             });
 
