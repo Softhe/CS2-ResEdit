@@ -5,8 +5,8 @@
 //! models, and privacy-safe diagnostics.
 
 use cs2_resedit_core::{
-    CoreError, DiagnosticService, DisplayInfo, DisplayResolution, PreferencesService,
-    ResolutionCatalog, SteamService, ValveKeyValues, VideoConfigService,
+    CoreError, DiagnosticService, DisplayInfo, DisplayResolution, PreferencesService, Resolution,
+    ResolutionCatalog, SteamService, UiTheme, UpdateResult, ValveKeyValues, VideoConfigService,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -21,6 +21,22 @@ fn service() -> VideoConfigService {
     VideoConfigService
 }
 
+/// Snapshot-guarded update, the way the app applies a change.
+fn update(
+    path: &Path,
+    resolution: &Resolution,
+    create_backup: bool,
+) -> Result<UpdateResult, CoreError> {
+    let snapshot = service().read_snapshot(path)?;
+    service().update_if_unchanged(path, resolution, create_backup, &snapshot)
+}
+
+/// Snapshot-guarded restore, the way the app restores a backup.
+fn restore(path: &Path, backup: &Path) -> Result<PathBuf, CoreError> {
+    let snapshot = service().read_snapshot(path)?;
+    service().restore_if_unchanged(path, backup, &snapshot)
+}
+
 #[test]
 fn themes_round_trip_and_missing_or_unknown_themes_default_to_glacier() {
     use cs2_resedit_core::UiTheme;
@@ -33,7 +49,7 @@ fn themes_round_trip_and_missing_or_unknown_themes_default_to_glacier() {
             preferences.save_selection_with_theme(Some("123"), None, &[], theme, Some(&path));
         assert!(saved.warning.is_none());
         assert_eq!(preferences.read(Some(&path)).theme, theme);
-        preferences.save_selection(Some("456"), None, &[], Some(&path));
+        preferences.save_selection_with_theme(Some("456"), None, &[], theme, Some(&path));
         let loaded = preferences.read(Some(&path));
         assert_eq!(loaded.theme, theme);
         assert_eq!(loaded.last_account_id.as_deref(), Some("456"));
@@ -80,7 +96,7 @@ fn rejects_malformed_setting_suffix_without_writing() {
     let malformed = CONFIG.replace("\"1920\"", "\"1920\" trailing-data");
     fs::write(&path, &malformed).expect("write config");
     let resolution = ResolutionCatalog::parse("1280x720", None).expect("resolution");
-    assert!(service().update(&path, &resolution, true).is_err());
+    assert!(update(&path, &resolution, true).is_err());
     assert_eq!(fs::read_to_string(&path).expect("read config"), malformed);
     assert!(service().get_backups(&path).expect("backups").is_empty());
 }
@@ -116,7 +132,7 @@ fn guarded_restore_rejects_external_change() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = write_config(dir.path());
     let resolution = ResolutionCatalog::parse("1280x720", None).expect("resolution");
-    let updated = service().update(&path, &resolution, true).expect("update");
+    let updated = update(&path, &resolution, true).expect("update");
     let backup = Path::new(updated.backup_path.as_deref().expect("backup"));
     let snapshot = service().read_snapshot(&path).expect("snapshot");
     let externally_changed = format!(
@@ -139,7 +155,7 @@ fn rejects_malformed_utf16_without_writing() {
     for bytes in [vec![0xFF, 0xFE, 0x00], vec![0xFF, 0xFE, 0x00, 0xD8]] {
         let path = dir.path().join("cs2_video.txt");
         fs::write(&path, &bytes).expect("write config");
-        assert!(service().update(&path, &resolution, true).is_err());
+        assert!(update(&path, &resolution, true).is_err());
         assert_eq!(fs::read(&path).expect("read config"), bytes);
     }
 }
@@ -154,7 +170,7 @@ fn rejects_invalid_utf8_after_bom_without_writing() {
     fs::write(&path, &bytes).expect("write config");
     let resolution = ResolutionCatalog::parse("1280x720", None).expect("resolution");
 
-    assert!(service().update(&path, &resolution, true).is_err());
+    assert!(update(&path, &resolution, true).is_err());
     assert_eq!(fs::read(&path).expect("read config"), bytes);
     assert!(service().get_backups(&path).expect("backups").is_empty());
 }
@@ -217,7 +233,7 @@ fn preserves_encoding_bom_and_line_endings() {
         fs::write(&path, &bytes).expect("write encoded");
 
         let resolution = ResolutionCatalog::parse("1280x720", None).expect("parse resolution");
-        service().update(&path, &resolution, false).expect("update");
+        update(&path, &resolution, false).expect("update");
 
         let output = fs::read(&path).expect("read back");
         let preamble: &[u8] = match (encoding_name, bom) {
@@ -273,19 +289,17 @@ fn creates_restores_and_retains_recognized_backups() {
     for i in 0..7 {
         let resolution =
             ResolutionCatalog::parse(&format!("{}x720", 1280 + i), None).expect("parse");
-        service().update(&path, &resolution, true).expect("update");
+        update(&path, &resolution, true).expect("update");
         thread::sleep(Duration::from_millis(10));
     }
     fs::write(dir.path().join("cs2_video.txt.manual.bak"), "do not delete").expect("manual backup");
     let backups = service().get_backups(&path).expect("backups");
     assert_eq!(backups.len(), 5);
     assert!(dir.path().join("cs2_video.txt.manual.bak").exists());
-    let restore = backups.last().expect("oldest retained").clone();
-    let rollback = service()
-        .restore(&path, Path::new(&restore.path))
-        .expect("restore");
+    let oldest = backups.last().expect("oldest retained").clone();
+    let rollback = restore(&path, Path::new(&oldest.path)).expect("restore");
     assert!(rollback.is_file());
-    assert_eq!(service().read(&path).expect("read"), restore.state);
+    assert_eq!(service().read(&path).expect("read"), oldest.state);
 }
 
 #[cfg(windows)]
@@ -297,7 +311,7 @@ fn update_reports_prune_failure_and_restores_configuration() {
     for i in 0..5 {
         let resolution =
             ResolutionCatalog::parse(&format!("{}x720", 1280 + i), None).expect("resolution");
-        service().update(&path, &resolution, true).expect("update");
+        update(&path, &resolution, true).expect("update");
     }
     let backups = service().get_backups(&path).expect("backups");
     let oldest = Path::new(&backups.last().expect("oldest").path);
@@ -308,7 +322,7 @@ fn update_reports_prune_failure_and_restores_configuration() {
         .expect("hold backup without delete sharing");
     let before = fs::read(&path).expect("read original");
     let resolution = ResolutionCatalog::parse("1400x720", None).expect("resolution");
-    assert!(service().update(&path, &resolution, true).is_err());
+    assert!(update(&path, &resolution, true).is_err());
     assert_eq!(fs::read(&path).expect("read restored"), before);
 }
 
@@ -321,7 +335,7 @@ fn restore_reports_prune_failure_and_preserves_configuration() {
     for i in 0..5 {
         let resolution =
             ResolutionCatalog::parse(&format!("{}x720", 1280 + i), None).expect("resolution");
-        service().update(&path, &resolution, true).expect("update");
+        update(&path, &resolution, true).expect("update");
     }
     let backups = service().get_backups(&path).expect("backups");
     let oldest = Path::new(&backups.last().expect("oldest").path);
@@ -331,7 +345,7 @@ fn restore_reports_prune_failure_and_preserves_configuration() {
         .open(oldest)
         .expect("hold backup without delete sharing");
     let before = fs::read(&path).expect("read original");
-    assert!(service().restore(&path, oldest).is_err());
+    assert!(restore(&path, oldest).is_err());
     assert_eq!(fs::read(&path).expect("read restored"), before);
 }
 
@@ -402,7 +416,7 @@ fn retention_counts_corrupt_owned_backups() {
         .expect("write backup");
     }
     let resolution = ResolutionCatalog::parse("1280x720", None).expect("resolution");
-    service().update(&path, &resolution, true).expect("update");
+    update(&path, &resolution, true).expect("update");
 
     let owned_count = fs::read_dir(dir.path())
         .expect("read dir")
@@ -493,7 +507,7 @@ fn does_not_write_when_state_is_unchanged() {
         .modified()
         .expect("mtime");
     let resolution = ResolutionCatalog::parse("1920x1080", None).expect("parse");
-    let result = service().update(&path, &resolution, true).expect("update");
+    let result = update(&path, &resolution, true).expect("update");
     assert!(!result.changed);
     assert!(service().get_backups(&path).expect("backups").is_empty());
     assert_eq!(
@@ -596,7 +610,9 @@ fn discovers_and_orders_steam_accounts() {
         "\"users\"\n{\n\"76561198083722595\"\n{\n\"AccountName\" \"tester\"\n\"PersonaName\" \"Test Person\"\n\"MostRecent\" \"1\"\n}\n}",
     )
     .expect("write vdf");
-    let accounts = SteamService.get_accounts(&[dir.path().to_string_lossy().to_string()]);
+    let accounts = SteamService
+        .get_accounts_with_warnings(&[dir.path().to_string_lossy().to_string()])
+        .0;
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].persona_name, "Test Person");
     assert!(accounts[0].most_recent);
@@ -625,7 +641,8 @@ fn malformed_login_users_does_not_break_discovery() {
     fs::write(&login_users, "\"users\" { \"123\" {").expect("write");
     assert!(SteamService.parse_login_users(&login_users).is_err());
     assert!(SteamService
-        .get_accounts(&[dir.path().to_string_lossy().to_string()])
+        .get_accounts_with_warnings(&[dir.path().to_string_lossy().to_string()])
+        .0
         .is_empty());
 }
 
@@ -664,7 +681,9 @@ fn userdata_files_are_not_treated_as_accounts() {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::create_dir_all(dir.path().join("userdata")).expect("mkdir");
     fs::write(dir.path().join("userdata/123456867"), "not a directory").expect("write");
-    let accounts = SteamService.get_accounts(&[dir.path().to_string_lossy().to_string()]);
+    let accounts = SteamService
+        .get_accounts_with_warnings(&[dir.path().to_string_lossy().to_string()])
+        .0;
     assert!(accounts.is_empty());
 }
 
@@ -713,9 +732,11 @@ fn reads_schema_one_and_cleans_recent_files() {
     assert_eq!(value.last_account_id.as_deref(), Some("42"));
     assert_eq!(value.recent_config_paths.len(), 1);
 
-    prefs_service.save(
+    prefs_service.save_selection_with_theme(
         Some("43"),
+        None,
         &[config.to_string_lossy().to_string()],
+        UiTheme::default(),
         Some(&settings),
     );
     assert_eq!(
@@ -735,7 +756,13 @@ fn selected_config_path_round_trips_and_old_schema_remains_valid() {
     let settings = dir.path().join("settings.json");
     let service = PreferencesService::new(service());
 
-    service.save_selection(None, Some(&config), &[], Some(&settings));
+    service.save_selection_with_theme(
+        None,
+        Some(&config),
+        &[],
+        UiTheme::default(),
+        Some(&settings),
+    );
     let saved = service.read(Some(&settings));
     assert_eq!(
         saved.last_config_path.as_deref(),
@@ -766,7 +793,13 @@ fn reports_preference_save_failure() {
     let occupied_parent = dir.path().join("occupied");
     fs::write(&occupied_parent, b"file").expect("write parent blocker");
     let settings = occupied_parent.join("settings.json");
-    let result = PreferencesService::new(service()).save(Some("43"), &[], Some(&settings));
+    let result = PreferencesService::new(service()).save_selection_with_theme(
+        Some("43"),
+        None,
+        &[],
+        UiTheme::default(),
+        Some(&settings),
+    );
     assert!(result
         .warning
         .as_deref()
@@ -908,7 +941,15 @@ fn diagnostic_report_is_versioned_and_privacy_safe() {
         ],
     }];
     let configs = service();
-    let report = DiagnosticService::create(&configs, "1.0.0", &displays, 1, 2, Some(&path));
+    let report = DiagnosticService::create_with_options(
+        &configs,
+        "1.0.0",
+        &displays,
+        1,
+        2,
+        Some(&path),
+        false,
+    );
     let json = DiagnosticService::to_json(&report);
     let summary = DiagnosticService::to_summary(&report);
 
@@ -942,7 +983,8 @@ fn diagnostic_report_sanitizes_configuration_failure() {
     let path = dir.path().join("secret-path.txt");
     fs::write(&path, "invalid").expect("write");
     let configs = service();
-    let report = DiagnosticService::create(&configs, "1.0.0", &[], 0, 0, Some(&path));
+    let report =
+        DiagnosticService::create_with_options(&configs, "1.0.0", &[], 0, 0, Some(&path), false);
     let json = DiagnosticService::to_json(&report);
     assert_eq!(report.configuration_status, "Invalid");
     assert_eq!(
@@ -965,7 +1007,7 @@ fn diagnostic_report_counts_backups_and_reports_high_contrast() {
     .expect("write");
     let configs = service();
     let resolution = ResolutionCatalog::parse("1920x1080", Some(1)).expect("preset");
-    configs.update(&path, &resolution, true).expect("backup");
+    update(&path, &resolution, true).expect("backup");
     let report =
         DiagnosticService::create_with_options(&configs, "2.0.0", &[], 1, 1, Some(&path), true);
     assert_eq!(report.schema_version, 2);
@@ -1006,7 +1048,7 @@ fn core_error_exposes_io_source() {
 }
 
 #[test]
-fn save_preserves_last_config_path() {
+fn resaving_the_loaded_selection_preserves_last_config_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let settings = dir.path().join("settings.json");
     let config = dir.path().join("cs2_video.txt");
@@ -1016,13 +1058,28 @@ fn save_preserves_last_config_path() {
     )
     .expect("write");
     let prefs = PreferencesService::new(service());
-    let saved = prefs.save_selection(Some("123"), Some(&config), &[], Some(&settings));
+    let saved = prefs.save_selection_with_theme(
+        Some("123"),
+        Some(&config),
+        &[],
+        UiTheme::Paper,
+        Some(&settings),
+    );
     assert_eq!(
         saved.last_config_path.as_deref(),
         Some(config.to_string_lossy().as_ref())
     );
-    let kept = prefs.save(Some("123"), &[], Some(&settings));
+    // The app re-saves the loaded selection, e.g. after a theme change.
+    let loaded = prefs.read(Some(&settings));
+    let kept = prefs.save_selection_with_theme(
+        loaded.last_account_id.as_deref(),
+        loaded.last_config_path.as_deref().map(Path::new),
+        &loaded.recent_config_paths,
+        loaded.theme,
+        Some(&settings),
+    );
     assert_eq!(kept.last_config_path, saved.last_config_path);
+    assert_eq!(kept.theme, UiTheme::Paper);
 }
 
 #[test]
@@ -1106,8 +1163,7 @@ fn failed_writes_do_not_leave_redundant_backups() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = write_config(dir.path());
     let resolution = ResolutionCatalog::parse("1280x960", None).expect("resolution");
-    let first = service()
-        .update(&path, &resolution, true)
+    let first = update(&path, &resolution, true)
         .expect("seed backup")
         .backup_path
         .expect("backup");
@@ -1148,17 +1204,12 @@ fn configuration_without_aspect_mode_is_supported_and_left_without_it() {
     // Only the aspect differs: nothing can be stored, so nothing is written.
     let same_size = ResolutionCatalog::parse("2560x1440", Some(0)).expect("resolution");
     assert!(state.matches(&same_size));
-    let result = service().update(&path, &same_size, true).expect("update");
+    let result = update(&path, &same_size, true).expect("update");
     assert!(!result.changed);
     assert_eq!(fs::read_to_string(&path).expect("read"), original);
 
     let resolution = ResolutionCatalog::parse("1280x960", None).expect("resolution");
-    assert!(
-        service()
-            .update(&path, &resolution, true)
-            .expect("update")
-            .changed
-    );
+    assert!(update(&path, &resolution, true).expect("update").changed);
     let text = fs::read_to_string(&path).expect("read");
     assert_eq!(
         text,

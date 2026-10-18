@@ -153,34 +153,6 @@ impl PreferencesService {
         result
     }
 
-    pub fn save(
-        &self,
-        last_account_id: Option<&str>,
-        recent_paths: &[String],
-        path: Option<&Path>,
-    ) -> Preferences {
-        // Preserve the stored selection; `save` predates `LastConfigPath`
-        // and callers expect it not to drop the remembered file.
-        let existing = self.read(path).last_config_path;
-        self.save_selection(
-            last_account_id,
-            existing.as_deref().map(Path::new),
-            recent_paths,
-            path,
-        )
-    }
-
-    pub fn save_selection(
-        &self,
-        last_account_id: Option<&str>,
-        last_config_path: Option<&Path>,
-        recent_paths: &[String],
-        path: Option<&Path>,
-    ) -> Preferences {
-        let theme = self.read(path).theme;
-        self.save_selection_with_theme(last_account_id, last_config_path, recent_paths, theme, path)
-    }
-
     pub fn save_selection_with_theme(
         &self,
         last_account_id: Option<&str>,

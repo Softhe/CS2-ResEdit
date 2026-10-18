@@ -58,10 +58,6 @@ impl SteamService {
         roots
     }
 
-    pub fn get_accounts(&self, roots: &[String]) -> Vec<SteamAccount> {
-        self.get_accounts_with_warnings(roots).0
-    }
-
     pub fn get_accounts_with_warnings(&self, roots: &[String]) -> (Vec<SteamAccount>, Vec<String>) {
         let mut accounts: HashMap<String, SteamAccount> = HashMap::new();
         let mut warnings = Vec::new();
