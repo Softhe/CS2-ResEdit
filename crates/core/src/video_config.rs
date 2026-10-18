@@ -3,6 +3,7 @@ use crate::fsutil;
 use crate::models::{
     BackupInfo, ConfigurationInspection, Resolution, UpdateResult, VideoConfigState,
 };
+use crate::resolution_catalog::ResolutionCatalog;
 use chrono::Local;
 use regex::Regex;
 use std::fs;
@@ -22,6 +23,13 @@ fn value_pattern(key: &str) -> String {
     )
 }
 
+/// Matches any entry line for `key`, whatever its value looks like. Entries
+/// are counted with this pattern so a malformed duplicate cannot hide from
+/// the stricter value pattern.
+fn key_pattern(key: &str) -> String {
+    format!(r#"(?im)^[ \t]*"{key}""#, key = regex::escape(key))
+}
+
 fn exactly_one_error(key: &str) -> CoreError {
     CoreError::InvalidData(format!(
         "Configuration must contain exactly one '{key}' entry."
@@ -32,22 +40,54 @@ fn value_error(key: &str) -> CoreError {
     CoreError::InvalidData(format!("Configuration value '{key}' is invalid."))
 }
 
-fn value_regex(key: &str) -> &'static Regex {
+/// Compiled `(key line, value line)` patterns for a configuration key.
+fn key_regexes(key: &str) -> &'static (Regex, Regex) {
+    fn compile(key: &str) -> (Regex, Regex) {
+        (
+            Regex::new(&key_pattern(key)).expect("valid key regex"),
+            Regex::new(&value_pattern(key)).expect("valid value regex"),
+        )
+    }
     match key {
         WIDTH_KEY => {
-            static RE: OnceLock<Regex> = OnceLock::new();
-            RE.get_or_init(|| Regex::new(&value_pattern(WIDTH_KEY)).expect("valid value regex"))
+            static RE: OnceLock<(Regex, Regex)> = OnceLock::new();
+            RE.get_or_init(|| compile(WIDTH_KEY))
         }
         HEIGHT_KEY => {
-            static RE: OnceLock<Regex> = OnceLock::new();
-            RE.get_or_init(|| Regex::new(&value_pattern(HEIGHT_KEY)).expect("valid value regex"))
+            static RE: OnceLock<(Regex, Regex)> = OnceLock::new();
+            RE.get_or_init(|| compile(HEIGHT_KEY))
         }
         MODE_KEY => {
-            static RE: OnceLock<Regex> = OnceLock::new();
-            RE.get_or_init(|| Regex::new(&value_pattern(MODE_KEY)).expect("valid value regex"))
+            static RE: OnceLock<(Regex, Regex)> = OnceLock::new();
+            RE.get_or_init(|| compile(MODE_KEY))
         }
         _ => unreachable!("unknown configuration key"),
     }
+}
+
+/// Locates the sole entry for `key`. Returns `Ok(None)` when it is absent,
+/// an "exactly one" error for duplicates, and a value error when the single
+/// entry exists but its value is not a well-formed integer.
+fn find_entry<'t>(text: &'t str, key: &str) -> Result<Option<regex::Captures<'t>>> {
+    let (key_re, value_re) = key_regexes(key);
+    let mut entries = key_re.find_iter(text);
+    let Some(entry) = entries.next() else {
+        return Ok(None);
+    };
+    if entries.next().is_some() {
+        return Err(exactly_one_error(key));
+    }
+    let line_end = text[entry.start()..]
+        .find('\n')
+        .map_or(text.len(), |offset| entry.start() + offset + 1);
+    let caps = value_re
+        .captures_at(&text[..line_end], entry.start())
+        .filter(|caps| caps.get(0).is_some_and(|m| m.start() == entry.start()))
+        .ok_or_else(|| value_error(key))?;
+    if !balanced_value_quotes(&caps) {
+        return Err(value_error(key));
+    }
+    Ok(Some(caps))
 }
 
 fn balanced_value_quotes(caps: &regex::Captures<'_>) -> bool {
@@ -139,11 +179,20 @@ impl VideoConfigService {
         })
     }
 
+    /// Reads the resolution entries. Width and height are required; the
+    /// aspect-mode entry is optional and inferred from the dimensions when
+    /// the file omits it.
     pub fn parse(&self, text: &str) -> Result<VideoConfigState> {
-        Ok(VideoConfigState {
-            width: Self::read_unique(text, WIDTH_KEY, 1, 32768)?,
-            height: Self::read_unique(text, HEIGHT_KEY, 1, 32768)?,
-            aspect_mode: Self::read_unique(text, MODE_KEY, 0, 2)?,
+        let width = Self::read_unique(text, WIDTH_KEY, 1, 32768)?;
+        let height = Self::read_unique(text, HEIGHT_KEY, 1, 32768)?;
+        Ok(match Self::read_optional(text, MODE_KEY, 0, 2)? {
+            Some(mode) => VideoConfigState::new(width, height, mode),
+            None => VideoConfigState {
+                width,
+                height,
+                aspect_mode: ResolutionCatalog::nearest_aspect_mode(width, height),
+                aspect_mode_stored: false,
+            },
         })
     }
 
@@ -181,12 +230,7 @@ impl VideoConfigService {
         check_snapshot(snapshot, &original_bytes)?;
         let document = TextDocument::decode(&original_bytes)?;
         let current = self.parse(&document.text)?;
-        let desired = VideoConfigState {
-            width: resolution.width,
-            height: resolution.height,
-            aspect_mode: resolution.mode,
-        };
-        if current == desired {
+        if current.matches(resolution) {
             return Ok(UpdateResult {
                 changed: false,
                 backup_path: None,
@@ -195,7 +239,9 @@ impl VideoConfigService {
 
         let mut changed = Self::replace_unique(&document.text, WIDTH_KEY, resolution.width)?;
         changed = Self::replace_unique(&changed, HEIGHT_KEY, resolution.height)?;
-        changed = Self::replace_unique(&changed, MODE_KEY, resolution.mode)?;
+        if current.aspect_mode_stored {
+            changed = Self::replace_unique(&changed, MODE_KEY, resolution.mode)?;
+        }
         // Validate before writing.
         let _ = self.parse(&changed)?;
 
@@ -258,7 +304,12 @@ impl VideoConfigService {
             Err(err) => {
                 // A failed atomic replacement normally leaves the live file
                 // untouched. Writing the backup over it here could erase a
-                // concurrent edit made by another process.
+                // concurrent edit made by another process. The new backup
+                // only duplicates the unchanged file; keeping it would let
+                // repeated failures push genuine backups out of retention.
+                if let Some(backup) = &backup_path {
+                    let _ = fs::remove_file(backup);
+                }
                 Err(err)
             }
         }
@@ -375,45 +426,34 @@ impl VideoConfigService {
                 }
                 Ok(rollback)
             }
-            Err(err) => Err(err.into()),
+            Err(err) => {
+                // The live file is unchanged, so the rollback copy is a
+                // redundant duplicate that would crowd out older backups.
+                let _ = fs::remove_file(&rollback);
+                Err(CoreError::from(err).context("Restoring the backup failed"))
+            }
         }
     }
 
     fn read_unique(text: &str, key: &str, min: i32, max: i32) -> Result<i32> {
-        let re = value_regex(key);
-        // Single pass: stop as soon as a second match proves duplication.
-        let mut iter = re.captures_iter(text);
-        let Some(caps) = iter.next() else {
-            return Err(exactly_one_error(key));
+        Self::read_optional(text, key, min, max)?.ok_or_else(|| exactly_one_error(key))
+    }
+
+    fn read_optional(text: &str, key: &str, min: i32, max: i32) -> Result<Option<i32>> {
+        let Some(caps) = find_entry(text, key)? else {
+            return Ok(None);
         };
-        if iter.next().is_some() {
-            return Err(exactly_one_error(key));
-        }
-        if !balanced_value_quotes(&caps) {
-            return Err(value_error(key));
-        }
-        let raw = caps.name("value").map(|m| m.as_str()).unwrap_or_default();
-        let value: i32 = raw.parse().map_err(|_| value_error(key))?;
+        let value: i32 = caps["value"].parse().map_err(|_| value_error(key))?;
         if value < min || value > max {
             return Err(value_error(key));
         }
-        Ok(value)
+        Ok(Some(value))
     }
 
     fn replace_unique(text: &str, key: &str, value: i32) -> Result<String> {
-        let re = value_regex(key);
-        // Single pass: locate the sole match, then splice around it instead
-        // of re-scanning with Regex::replace.
-        let mut iter = re.captures_iter(text);
-        let Some(caps) = iter.next() else {
-            return Err(exactly_one_error(key));
-        };
-        if iter.next().is_some() {
-            return Err(exactly_one_error(key));
-        }
-        if !balanced_value_quotes(&caps) {
-            return Err(value_error(key));
-        }
+        // Locate the sole entry, then splice around it instead of re-scanning
+        // with Regex::replace.
+        let caps = find_entry(text, key)?.ok_or_else(|| exactly_one_error(key))?;
         let whole = caps.get(0).expect("capture 0 always present");
         let mut out = String::with_capacity(text.len() + 8);
         out.push_str(&text[..whole.start()]);
@@ -476,15 +516,7 @@ fn check_snapshot(snapshot: Option<&VideoConfigSnapshot>, current: &[u8]) -> Res
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        a.to_string_lossy()
-            .eq_ignore_ascii_case(&b.to_string_lossy())
-    }
-    #[cfg(not(windows))]
-    {
-        a == b
-    }
+    fsutil::paths_equal_ci(&a.to_string_lossy(), &b.to_string_lossy())
 }
 
 fn write_backup(path: &Path, bytes: &[u8]) -> Result<PathBuf> {

@@ -16,14 +16,16 @@ impl PreferencesService {
     }
 
     pub fn default_path() -> PathBuf {
+        // The explicit override wins; LOCALAPPDATA is always set on Windows
+        // and would otherwise make the override unreachable.
+        if let Some(dir) = std::env::var_os("CS2_RESEDIT_SETTINGS_DIR").filter(|v| !v.is_empty()) {
+            return Path::new(&dir).join("settings.json");
+        }
         #[cfg(windows)]
         {
             if let Ok(local) = std::env::var("LOCALAPPDATA") {
                 return Path::new(&local).join(Self::versioned_suffix());
             }
-        }
-        if let Ok(local) = std::env::var("CS2_RESEDIT_SETTINGS_DIR") {
-            return Path::new(&local).join("settings.json");
         }
         #[cfg(windows)]
         {

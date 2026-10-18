@@ -389,12 +389,9 @@ impl ResEditApp {
         };
         match self.pending_resolution() {
             Ok(resolution) => {
-                let differs = original
-                    != cs2_resedit_core::VideoConfigState {
-                        width: resolution.width,
-                        height: resolution.height,
-                        aspect_mode: resolution.mode,
-                    };
+                // Files without an aspect-mode entry only store dimensions,
+                // so an aspect-only change has nothing to write.
+                let differs = !original.matches(&resolution);
                 let name = ResolutionCatalog::mode_name(
                     resolution.mode,
                     resolution.width,
