@@ -30,14 +30,41 @@ const SLOW_SCAN_THRESHOLD: Duration = Duration::from_millis(150);
 const SCAN_NOTICE_DURATION: Duration = Duration::from_secs(4);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Background enumeration request. `generation` matches the coordinator
-/// sequence at spawn time; results from an older generation are stale and
-/// must be dropped instead of adopted (see `poll_scans`).
+/// Background enumeration request. Only the newest request is polled; a
+/// timed-out request it replaced moves to the retired list, whose late
+/// results are discarded unread (see `prepare_scan`).
 struct PendingScan<T> {
     receiver: mpsc::Receiver<T>,
     started: Instant,
     timeout_reported: bool,
-    generation: u64,
+}
+
+/// An action that waits for the user to confirm it in a modal prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Confirmation {
+    /// Pending edits would be lost by switching to another file state.
+    DiscardEdits(DiscardAction),
+    /// CS2 is running and may overwrite the file when it exits.
+    GameRunning(GuardedWrite),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DiscardAction {
+    /// An account picked in the selector, by its current list position.
+    /// Prompts store `SelectConfig` instead.
+    SelectAccount(usize),
+    /// A queued account switch, identified by its configuration path: an
+    /// account scan may rebuild and reorder the list while the prompt is open.
+    SelectConfig(String),
+    Reload,
+    /// A file the user picked and that already passed validation.
+    OpenFile(PathBuf),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuardedWrite {
+    Apply,
+    Restore,
 }
 
 // Keep at most two workers per scan type, including abandoned workers.
@@ -125,10 +152,14 @@ pub struct ResEditApp {
     scan_notice: Option<(String, Instant)>,
     retired_account_scans: Vec<mpsc::Receiver<AccountScanResult>>,
     retired_display_scans: Vec<mpsc::Receiver<Vec<DisplayInfo>>>,
-    /// Generation-tagged scan coordinator sequences. One replacement is allowed
-    /// while an earlier worker is stalled; stale results are discarded.
-    account_scan_seq: u64,
-    display_scan_seq: u64,
+    /// Prompt waiting for the user before a destructive or risky action.
+    confirmation: Option<Confirmation>,
+    /// Reports whether CS2 is running (`None` when unknown). Replaced in tests.
+    game_probe: fn() -> Option<bool>,
+    /// Reports Windows High Contrast. Replaced in tests.
+    high_contrast_probe: fn() -> bool,
+    /// `CS2_RESEDIT_HIGH_CONTRAST` forces the high-contrast palette.
+    high_contrast_forced: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -143,8 +174,9 @@ impl ResEditApp {
         steam_root: Option<String>,
         display_provider: Option<Box<dyn DisplayModeProvider>>,
     ) -> Self {
-        let high_contrast =
+        let high_contrast_forced =
             std::env::var("CS2_RESEDIT_HIGH_CONTRAST").is_ok_and(|v| !v.is_empty() && v != "0");
+        let high_contrast = high_contrast_forced || crate::system::high_contrast_enabled();
         Self {
             configs: VideoConfigService,
             display_provider: Arc::from(
@@ -202,8 +234,10 @@ impl ResEditApp {
             scan_notice: None,
             retired_account_scans: Vec::new(),
             retired_display_scans: Vec::new(),
-            account_scan_seq: 0,
-            display_scan_seq: 0,
+            confirmation: None,
+            game_probe: crate::system::game_running,
+            high_contrast_probe: crate::system::high_contrast_enabled,
+            high_contrast_forced,
         }
     }
 
@@ -259,12 +293,10 @@ impl ResEditApp {
             let (accounts, warnings) = steam.get_accounts_with_warnings(&roots);
             let _ = sender.send((roots.len(), accounts, warnings));
         });
-        self.account_scan_seq += 1;
         self.account_scan = Some(PendingScan {
             receiver,
             started: Instant::now(),
             timeout_reported: false,
-            generation: self.account_scan_seq,
         });
     }
 
@@ -277,12 +309,10 @@ impl ResEditApp {
         thread::spawn(move || {
             let _ = sender.send(provider.get_displays());
         });
-        self.display_scan_seq += 1;
         self.display_scan = Some(PendingScan {
             receiver,
             started: Instant::now(),
             timeout_reported: false,
-            generation: self.display_scan_seq,
         });
     }
 
@@ -312,12 +342,30 @@ impl ResEditApp {
 
     /// Polls the OS for topology changes, mirroring the C# app's
     /// WM_DISPLAYCHANGE handling; adopts the new list only on change.
-    fn poll_displays(&mut self) {
+    /// Polls the OS for display-topology and High Contrast changes. Runs
+    /// only while the window has focus: nothing can be selected in the
+    /// background, and focusing the window triggers a fresh poll.
+    fn poll_system(&mut self) {
         if self.last_display_poll.elapsed() < DISPLAY_POLL_INTERVAL {
             return;
         }
         self.last_display_poll = Instant::now();
+        self.refresh_high_contrast();
         self.refresh_displays();
+    }
+
+    /// Follows Windows High Contrast at runtime, like the C# build did.
+    fn refresh_high_contrast(&mut self) {
+        let enabled = self.high_contrast_forced || (self.high_contrast_probe)();
+        if enabled == self.palette.high_contrast {
+            return;
+        }
+        self.palette = if enabled {
+            ThemePalette::high_contrast()
+        } else {
+            ThemePalette::for_theme(self.preferences.theme)
+        };
+        self.theme_applied = false;
     }
 
     fn poll_scans(&mut self) {
@@ -325,24 +373,16 @@ impl ResEditApp {
             match scan.receiver.try_recv() {
                 Ok((root_count, accounts, warnings)) => {
                     let elapsed = scan.started.elapsed();
-                    let current = scan.generation == self.account_scan_seq;
                     self.account_scan = None;
-                    // Stale generations (abandoned after a timeout) must not
-                    // overwrite state adopted by a newer scan.
-                    if current {
-                        self.adopt_accounts(root_count, accounts);
-                        self.note_scan("Steam account scan", elapsed);
-                        if !warnings.is_empty() {
-                            self.set_background_status("Steam accounts were found, but account names could not be read from one or more Steam installations.", true);
-                        }
+                    self.adopt_accounts(root_count, accounts);
+                    self.note_scan("Steam account scan", elapsed);
+                    if !warnings.is_empty() {
+                        self.set_background_status("Steam accounts were found, but account names could not be read from one or more Steam installations.", true);
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    let current = scan.generation == self.account_scan_seq;
                     self.account_scan = None;
-                    if current {
-                        self.set_background_status("Steam account scan failed.", true);
-                    }
+                    self.set_background_status("Steam account scan failed.", true);
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -351,21 +391,15 @@ impl ResEditApp {
             match scan.receiver.try_recv() {
                 Ok(displays) => {
                     let elapsed = scan.started.elapsed();
-                    let current = scan.generation == self.display_scan_seq;
                     self.display_scan = None;
-                    if current {
-                        if displays != self.displays {
-                            self.adopt_displays(displays);
-                        }
-                        self.note_scan("Display scan", elapsed);
+                    if displays != self.displays {
+                        self.adopt_displays(displays);
                     }
+                    self.note_scan("Display scan", elapsed);
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    let current = scan.generation == self.display_scan_seq;
                     self.display_scan = None;
-                    if current {
-                        self.set_background_status("Display scan failed.", true);
-                    }
+                    self.set_background_status("Display scan failed.", true);
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -417,6 +451,25 @@ impl ResEditApp {
         }
     }
 
+    /// Whether Refresh can start a scan; mirrors F5 and `prepare_scan`,
+    /// which replace a scan once it has timed out.
+    fn can_refresh_accounts(&self) -> bool {
+        if self
+            .account_scan
+            .as_ref()
+            .is_some_and(|scan| !scan.timeout_reported)
+        {
+            return false;
+        }
+        // Retired workers that are still blocked keep their slot; finished
+        // ones are reclaimed by `prepare_scan` (their results are discarded).
+        let blocked = self
+            .retired_account_scans
+            .iter()
+            .filter(|receiver| matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)))
+            .count();
+        blocked + usize::from(self.account_scan.is_some()) < 2
+    }
     fn scans_need_fast_poll(&self) -> bool {
         self.account_scan
             .as_ref()
@@ -532,18 +585,24 @@ impl eframe::App for ResEditApp {
             self.theme_applied = true;
         }
         self.poll_scans();
-        self.poll_displays();
-        ctx.request_repaint_after(if self.scans_need_fast_poll() {
-            Duration::from_millis(50)
-        } else {
-            DISPLAY_POLL_INTERVAL
-        });
-        let modal_open = self.show_backups || self.show_diagnostics;
+        let focused = ctx.input(|i| i.focused);
+        if focused {
+            self.poll_system();
+        }
+        // Background scans need quick polling. Otherwise wake only while
+        // focused; regaining focus repaints and triggers the next poll.
+        if self.scans_need_fast_poll() {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        } else if focused {
+            ctx.request_repaint_after(DISPLAY_POLL_INTERVAL);
+        }
+        let modal_open = self.show_backups || self.show_diagnostics || self.confirmation.is_some();
         if !modal_open && ctx.input(|i| i.key_pressed(egui::Key::F5)) {
             self.refresh_accounts();
         }
-        // Esc closes the topmost modal; diagnostics sits above backups.
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Esc closes the topmost modal; diagnostics sits above backups. An
+        // open confirmation handles Esc itself (see `confirmation_prompt`).
+        if self.confirmation.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             if self.show_diagnostics {
                 self.show_diagnostics = false;
             } else if self.show_backups {
@@ -551,11 +610,13 @@ impl eframe::App for ResEditApp {
                 self.confirm_restore = false;
             }
         }
+        // Exactly Ctrl+S: Ctrl+Shift+S and Ctrl+Alt+S do not apply.
         if !modal_open
-            && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S))
-            && self.can_apply()
+            && ctx.input(|i| {
+                i.modifiers.matches_exact(egui::Modifiers::COMMAND) && i.key_pressed(egui::Key::S)
+            })
         {
-            self.apply();
+            self.request_apply();
         }
         let palette = self.palette;
 
@@ -683,7 +744,7 @@ impl eframe::App for ResEditApp {
                         let apply =
                             ui.add_enabled(self.can_apply(), egui::Button::new("Apply changes"));
                         if apply.clicked() {
-                            self.apply();
+                            self.request_apply();
                         }
                         if !apply.enabled() {
                             apply.on_disabled_hover_text(if self.original.is_none() {
@@ -813,7 +874,7 @@ impl eframe::App for ResEditApp {
                             ui.label("Restore this backup? A rollback backup of the active file will be created.");
                             ui.horizontal(|ui| {
                                 if ui.button("Confirm restore").clicked() {
-                                    self.restore_selected_backup();
+                                    self.request_restore();
                                 }
                                 if ui.button("Cancel").clicked() {
                                     self.confirm_restore = false;
@@ -880,6 +941,71 @@ impl eframe::App for ResEditApp {
                     });
                 });
             self.show_diagnostics = open;
+        }
+
+        self.confirmation_prompt(ctx);
+    }
+}
+
+impl ResEditApp {
+    /// Modal prompt for the pending `confirmation`. Esc or a click outside
+    /// cancels it.
+    fn confirmation_prompt(&mut self, ctx: &egui::Context) {
+        let Some(confirmation) = self.confirmation.clone() else {
+            return;
+        };
+        let (title, body, confirm_label, cancel_label) = match &confirmation {
+            Confirmation::DiscardEdits(action) => (
+                "Discard unsaved changes?",
+                match action {
+                    DiscardAction::SelectAccount(_) | DiscardAction::SelectConfig(_) => {
+                        "The pending resolution has not been applied. Switching accounts discards it."
+                    }
+                    DiscardAction::Reload => {
+                        "The pending resolution has not been applied. Reloading the file discards it."
+                    }
+                    DiscardAction::OpenFile(_) => {
+                        "The pending resolution has not been applied. Opening another file discards it."
+                    }
+                },
+                "Discard changes",
+                "Keep editing",
+            ),
+            Confirmation::GameRunning(write) => (
+                "Counter-Strike 2 is running",
+                "CS2 can overwrite cs2_video.txt with its in-memory settings when it exits. \
+                 Close the game first, or continue anyway.",
+                match write {
+                    GuardedWrite::Apply => "Apply anyway",
+                    GuardedWrite::Restore => "Restore anyway",
+                },
+                "Cancel",
+            ),
+        };
+        let palette = self.palette;
+        let mut choice = None;
+        let response = egui::Modal::new(egui::Id::new("confirmation")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(title);
+            ui.add(egui::Label::new(body).wrap());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(egui::RichText::new(confirm_label).color(palette.warning))
+                    .clicked()
+                {
+                    choice = Some(true);
+                }
+                if ui.button(cancel_label).clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => self.confirm(),
+            Some(false) => self.cancel_confirmation(),
+            None if response.should_close() => self.cancel_confirmation(),
+            None => {}
         }
     }
 }
@@ -1022,7 +1148,6 @@ mod tests {
             receiver,
             started: Instant::now(),
             timeout_reported: false,
-            generation: app.account_scan_seq,
         });
         sender
             .send((
@@ -1044,7 +1169,6 @@ mod tests {
             receiver,
             started: Instant::now() - SCAN_TIMEOUT,
             timeout_reported: true,
-            generation: 0,
         });
         // Preserve the first worker and allow exactly one replacement.
         assert!(prepare_scan(
@@ -1056,13 +1180,11 @@ mod tests {
             receiver,
             started: Instant::now() - SCAN_TIMEOUT,
             timeout_reported: true,
-            generation: 1,
         });
         for _ in 0..100 {
             app.refresh_displays();
         }
         assert_eq!(app.retired_display_scans.len(), 1);
-        assert_eq!(app.display_scan.as_ref().unwrap().generation, 1);
         first.send(Vec::new()).unwrap();
         assert!(prepare_scan(
             &mut app.display_scan,
@@ -1392,12 +1514,10 @@ mod tests {
     fn timed_out_scan_uses_slow_polling_and_can_still_finish() {
         let mut app = ResEditApp::new(None, None, None);
         let (sender, receiver) = mpsc::channel();
-        app.display_scan_seq = 7;
         app.display_scan = Some(PendingScan {
             receiver,
             started: Instant::now() - SCAN_TIMEOUT,
             timeout_reported: false,
-            generation: 7,
         });
 
         app.poll_scans();
@@ -1410,16 +1530,14 @@ mod tests {
     }
 
     #[test]
-    fn stale_scan_generations_are_dropped_and_refresh_recovers() {
+    fn timed_out_scans_are_replaced_and_their_results_dropped() {
         let mut app = ResEditApp::new(None, None, None);
-        // Simulate a hung first-generation scan that already timed out.
+        // Simulate a hung first scan that already timed out.
         let (old_sender, old_receiver) = mpsc::channel::<Vec<DisplayInfo>>();
-        app.display_scan_seq = 1;
         app.display_scan = Some(PendingScan {
             receiver: old_receiver,
             started: Instant::now() - SCAN_TIMEOUT,
             timeout_reported: true,
-            generation: 1,
         });
         // The abandoned worker's late result arrives while wedged.
         let stale_display = DisplayInfo {
@@ -1434,11 +1552,16 @@ mod tests {
         // A refresh must replace the timed-out scan instead of wedging, and
         // the stale queued result dies with the abandoned receiver.
         app.refresh_displays();
-        assert_eq!(app.display_scan_seq, 2);
-        assert_eq!(app.display_scan.as_ref().unwrap().generation, 2);
+        assert_eq!(app.retired_display_scans.len(), 1);
+        let replacement = app.display_scan.as_ref().unwrap();
+        assert!(!replacement.timeout_reported);
+        let started = replacement.started;
         // Fresh (non-timed-out) scans still block replacement.
         app.refresh_displays();
-        assert_eq!(app.display_scan_seq, 2);
+        assert_eq!(app.display_scan.as_ref().unwrap().started, started);
+        // The abandoned worker had finished, so its slot is reclaimed and the
+        // queued stale result is dropped unread.
+        assert!(app.retired_display_scans.is_empty());
         app.poll_scans();
         assert!(app.displays.is_empty());
         assert!(!app.displays.iter().any(|d| d.device_name == "STALE"));
@@ -1717,5 +1840,187 @@ mod tests {
             .filter(|c| !COVERED.contains(c))
             .collect();
         assert!(missing.is_empty(), "uncovered UI glyphs: {missing:?}");
+    }
+
+    fn loaded_app(dir: &Path) -> (ResEditApp, PathBuf) {
+        let config = dir.join("cs2_video.txt");
+        std::fs::write(
+            &config,
+            "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
+        )
+        .unwrap();
+        let mut app = ResEditApp::new(Some(dir.join("settings.json")), None, None);
+        app.game_probe = || Some(false);
+        assert!(app.load_path(Some(config.clone())));
+        (app, config)
+    }
+
+    #[test]
+    fn running_game_asks_before_apply_and_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, config) = loaded_app(dir.path());
+        let original = std::fs::read(&config).unwrap();
+        app.custom_width = "1280".into();
+        app.pending_changed();
+
+        app.game_probe = || Some(true);
+        app.request_apply();
+        assert_eq!(
+            app.confirmation,
+            Some(Confirmation::GameRunning(GuardedWrite::Apply))
+        );
+        assert_eq!(std::fs::read(&config).unwrap(), original);
+        app.cancel_confirmation();
+        assert!(app.can_apply(), "cancel keeps the pending edit");
+
+        app.request_apply();
+        app.confirm();
+        assert!(app.status.starts_with("Changes applied."));
+        assert!(app.confirmation.is_none());
+
+        app.open_backups();
+        app.selected_backup = Some(0);
+        app.request_restore();
+        assert_eq!(
+            app.confirmation,
+            Some(Confirmation::GameRunning(GuardedWrite::Restore))
+        );
+        app.confirm();
+        assert!(app.status.starts_with("Backup restored successfully."));
+
+        // An unreadable process list does not block the write.
+        app.game_probe = || None;
+        app.custom_width = "1600".into();
+        app.pending_changed();
+        app.request_apply();
+        assert!(app.confirmation.is_none());
+        assert!(app.status.starts_with("Changes applied."));
+    }
+
+    #[test]
+    fn discarding_pending_edits_requires_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, config) = loaded_app(dir.path());
+        app.accounts.push(custom_account(&config));
+        let other = dir.path().join("other").join("cs2_video.txt");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::copy(&config, &other).unwrap();
+        app.accounts.push(custom_account(&other));
+        app.selected_account = Some(0);
+
+        // Without pending edits, actions run immediately.
+        app.request_discard(DiscardAction::SelectAccount(1));
+        assert!(app.confirmation.is_none());
+        assert_eq!(app.selected_path.as_ref(), Some(&other));
+
+        app.custom_width = "1280".into();
+        app.pending_changed();
+        // Re-selecting the active entry neither prompts nor reloads.
+        app.request_discard(DiscardAction::SelectAccount(1));
+        assert!(app.confirmation.is_none());
+        assert!(app.has_pending_changes());
+
+        let config_entry = config.to_string_lossy().to_string();
+        for (action, queued) in [
+            (
+                DiscardAction::SelectAccount(0),
+                DiscardAction::SelectConfig(config_entry),
+            ),
+            (DiscardAction::Reload, DiscardAction::Reload),
+            (
+                DiscardAction::OpenFile(config.clone()),
+                DiscardAction::OpenFile(config.clone()),
+            ),
+        ] {
+            app.request_discard(action);
+            assert_eq!(app.confirmation, Some(Confirmation::DiscardEdits(queued)));
+            app.cancel_confirmation();
+            assert!(app.has_pending_changes(), "cancel keeps the edit");
+            assert_eq!(app.selected_path.as_ref(), Some(&other));
+        }
+
+        // A scan that reorders the list while the prompt is open must not
+        // redirect the switch to whichever account now has that index.
+        app.request_discard(DiscardAction::SelectAccount(0));
+        app.accounts.reverse();
+        app.selected_account = Some(0);
+        app.confirm();
+        assert_eq!(app.selected_path.as_ref(), Some(&config));
+        assert_eq!(app.selected_account, Some(1));
+        assert!(!app.has_pending_changes());
+
+        // A queued account that disappeared is reported, and edits survive.
+        app.custom_width = "1280".into();
+        app.pending_changed();
+        app.request_discard(DiscardAction::SelectAccount(0));
+        app.accounts.remove(0);
+        app.selected_account = Some(0);
+        app.confirm();
+        assert_eq!(app.selected_path.as_ref(), Some(&config));
+        assert!(app.has_pending_changes());
+        assert!(app.status.contains("no longer listed"), "{}", app.status);
+    }
+
+    #[test]
+    fn refresh_stays_disabled_while_both_worker_slots_are_blocked() {
+        let mut app = ResEditApp::new(None, None, None);
+        let (blocked_sender, blocked) = mpsc::channel();
+        app.retired_account_scans.push(blocked);
+        let (_sender, receiver) = mpsc::channel();
+        app.account_scan = Some(PendingScan {
+            receiver,
+            started: Instant::now(),
+            timeout_reported: true,
+        });
+        assert!(!app.can_refresh_accounts());
+        // Once the retired worker finishes, its slot is free again.
+        drop(blocked_sender);
+        assert!(app.can_refresh_accounts());
+    }
+
+    #[test]
+    fn palette_follows_windows_high_contrast_changes() {
+        let mut app = ResEditApp::new(None, None, None);
+        app.high_contrast_forced = false;
+        app.preferences.theme = UiTheme::Canopy;
+        app.high_contrast_probe = || true;
+        app.refresh_high_contrast();
+        assert!(app.palette.high_contrast);
+        assert!(!app.theme_applied);
+        app.theme_applied = true;
+        app.refresh_high_contrast();
+        assert!(app.theme_applied, "unchanged state does not restyle");
+        app.high_contrast_probe = || false;
+        app.refresh_high_contrast();
+        assert_eq!(app.palette, ThemePalette::for_theme(UiTheme::Canopy));
+    }
+
+    #[test]
+    fn refresh_is_available_again_after_a_scan_times_out() {
+        let mut app = ResEditApp::new(None, None, None);
+        assert!(app.can_refresh_accounts());
+        let (_sender, receiver) = mpsc::channel();
+        app.account_scan = Some(PendingScan {
+            receiver,
+            started: Instant::now(),
+            timeout_reported: false,
+        });
+        assert!(!app.can_refresh_accounts());
+        app.account_scan.as_mut().unwrap().timeout_reported = true;
+        assert!(app.can_refresh_accounts());
+    }
+
+    #[test]
+    fn portrait_display_modes_are_not_offered_as_presets() {
+        let mut app = ResEditApp::new(None, None, None);
+        app.supported_modes = [(1080, 1920), (1920, 1080), (1200, 1600)].into();
+        for mode in 0..3 {
+            app.populate_preset_choices(mode, None, None);
+            assert!(app
+                .preset_choices
+                .iter()
+                .filter_map(|choice| choice.resolution)
+                .all(|r| r.width >= r.height));
+        }
     }
 }

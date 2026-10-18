@@ -14,7 +14,7 @@ The portable executable needs no installer, administrator rights, PowerShell run
 
 ## Use the editor
 
-1. Close Counter-Strike 2. The game can overwrite its configuration when it exits.
+1. Close Counter-Strike 2. The game can overwrite its configuration when it exits. If CS2 is still running when you apply or restore, the editor asks before writing.
 2. Download and run `CS2-ResEdit.exe`.
 3. Select a Steam account, or choose Browse to open a configuration.
 4. Select the target display, aspect ratio, and resolution.
@@ -26,7 +26,7 @@ The usual configuration path is:
 C:\Program Files (x86)\Steam\userdata\<AccountID>\730\local\cfg\cs2_video.txt
 ```
 
-Steam and display discovery run in the background. Refresh scans accounts again. Reload file reads the selected configuration again and replaces pending values with its current settings. Reset discards pending edits without writing to the file.
+Steam and display discovery run in the background. Refresh scans accounts again. Reload file reads the selected configuration again and replaces pending values with its current settings. Reset discards pending edits without writing to the file. Switching accounts, reloading, or opening another file while edits are pending asks before discarding them.
 
 Only one editor instance can run per Windows session. `--help` and `--version` show informational dialogs in the release build. Command-line configuration editing is not supported.
 
@@ -36,7 +36,7 @@ The display list shows the Windows-reported monitor model, display ID, current r
 
 Selecting a display changes resolution-availability guidance. It does not switch the desktop resolution or change CS2's monitor-selection fields.
 
-Windows-reported modes appear first, followed by the remaining curated presets for the selected aspect family. An unreported mode remains selectable; that label is not a guarantee that the monitor or game supports it.
+Windows-reported modes appear first, followed by the remaining curated presets for the selected aspect family. Portrait modes from rotated monitors are not listed. An unreported mode remains selectable; that label is not a guarantee that the monitor or game supports it.
 
 Changing the aspect family selects its recommended preset:
 
@@ -59,7 +59,7 @@ Choose Theme in the header. The editor saves your choice for the next launch.
 | Monolith | Dark graphite and lime | Lime |
 | Canopy | Dark forest green and jade | Jade |
 
-The title-bar and running taskbar icons follow the theme. The executable's File Explorer icon remains static.
+The title-bar and running taskbar icons follow the theme. The executable's File Explorer icon remains static. When Windows High Contrast is on, the editor switches to a high-contrast palette and follows the setting while it runs.
 
 Hover over any closed dropdown and scroll down to select the next entry or up to select the previous entry. Selection stops at either end. This applies to accounts, displays, presets, aspect ratios, and themes. Open menus retain normal scrolling.
 
@@ -70,7 +70,7 @@ The custom width and height fields also accept wheel input. Scroll up to increas
 | Keys | Action |
 | --- | --- |
 | `F5` | Refresh Steam accounts |
-| `Ctrl+S` | Apply changes, when available |
+| `Ctrl+S` | Apply changes, when available. Extra modifiers such as Shift do not trigger it. |
 | `Esc` | Close the topmost dialog |
 
 ## File changes and recovery
@@ -132,7 +132,7 @@ Select a valid configuration and change a setting. Apply remains disabled when p
 
 ### The game restores previous settings
 
-Close CS2 before applying changes. A running game may save its in-memory settings over the edited file when it exits.
+Close CS2 before applying changes. A running game may save its in-memory settings over the edited file when it exits. The editor warns when it detects `cs2.exe`; choose Cancel, close the game, then apply again.
 
 ### A change needs to be undone
 
