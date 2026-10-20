@@ -34,6 +34,10 @@ const DISPLAY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SLOW_SCAN_THRESHOLD: Duration = Duration::from_millis(150);
 const SCAN_NOTICE_DURATION: Duration = Duration::from_secs(4);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Quiet period before preference changes are written, so a burst of
+/// selections (wheel scrolling through themes, rapid account switches)
+/// becomes one write.
+const PREFERENCES_SAVE_DELAY: Duration = Duration::from_millis(500);
 /// Passes per frame: one to draw, then corrections while the equal-height
 /// cards settle after content or style changes (see `show_main_cards`).
 const CARD_PASSES: std::num::NonZeroUsize = std::num::NonZeroUsize::new(3).unwrap();
@@ -134,6 +138,8 @@ pub struct ResEditApp {
     retired_display_scans: Vec<mpsc::Receiver<Vec<DisplayInfo>>>,
     /// Shared card height from the previous pass (see `show_main_cards`).
     card_height: f32,
+    /// When unsaved preference changes are due to be written.
+    preferences_save_due: Option<Instant>,
     /// Prompt waiting for the user before a destructive or risky action.
     confirmation: Option<Confirmation>,
     /// Reports whether CS2 is running (`None` when unknown). Replaced in tests.
@@ -188,6 +194,7 @@ impl ResEditApp {
             retired_account_scans: Vec::new(),
             retired_display_scans: Vec::new(),
             card_height: 0.0,
+            preferences_save_due: None,
             confirmation: None,
             game_probe: crate::system::game_running,
             high_contrast_probe: crate::system::high_contrast_enabled,
@@ -442,8 +449,31 @@ impl ResEditApp {
         self.show_diagnostics = true;
     }
 
-    /// Writes the in-memory preferences and records whether that worked.
+    /// Schedules writing the in-memory preferences. Saving also validates
+    /// every recent file, so it stays off the path of each selection.
     fn save_preferences(&mut self) {
+        self.preferences_save_due = Some(Instant::now() + PREFERENCES_SAVE_DELAY);
+    }
+
+    /// Writes preferences once their quiet period has passed, and otherwise
+    /// wakes the UI when it will have.
+    fn save_due_preferences(&mut self, ctx: &egui::Context) {
+        let Some(due) = self.preferences_save_due else {
+            return;
+        };
+        let now = Instant::now();
+        if now >= due {
+            self.flush_preferences();
+        } else {
+            ctx.request_repaint_after(due - now);
+        }
+    }
+
+    /// Writes pending preference changes now and records whether that worked.
+    fn flush_preferences(&mut self) {
+        if self.preferences_save_due.take().is_none() {
+            return;
+        }
         let saved = self.preferences_service().save_selection_with_theme(
             self.preferences.last_account_id.as_deref(),
             self.preferences.last_config_path.as_deref().map(Path::new),
@@ -517,6 +547,7 @@ impl eframe::App for ResEditApp {
             self.theme_applied = true;
         }
         self.poll_scans();
+        self.save_due_preferences(ctx);
         let focused = ctx.input(|i| i.focused);
         if focused {
             self.poll_system();
@@ -563,7 +594,14 @@ impl eframe::App for ResEditApp {
         self.diagnostics_window(ctx);
         self.confirmation_prompt(ctx);
     }
+
+    /// Writes preference changes that were still waiting for their quiet
+    /// period when the window closed.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.flush_preferences();
+    }
 }
+
 fn export_diagnostics(path: &Path, json: &str) -> std::io::Result<()> {
     cs2_resedit_core::fsutil::atomic_write(path, json.as_bytes())
 }
@@ -614,6 +652,7 @@ mod tests {
             std::fs::write(&config, "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n").unwrap();
             let mut app = ResEditApp::new(Some(settings.clone()), None, None);
             assert!(app.load_path(Some(config.clone())));
+            app.flush_preferences();
             app.editor.custom_width = "1280".into();
             app.pending_changed();
             app.apply();
@@ -626,6 +665,7 @@ mod tests {
                 std::fs::write(&config, "invalid configuration").unwrap();
             }
             app.adopt_accounts(0, vec![custom_account(&config)]);
+            app.flush_preferences();
             assert_eq!(app.editor.path(), Some(config.as_path()));
             assert_eq!(app.editor.original().unwrap().width, 1280);
             if preference_failure {
@@ -873,6 +913,7 @@ mod tests {
         .expect("write config");
         let mut app = ResEditApp::new(Some(dir.path().to_path_buf()), None, None);
         app.load_path(Some(config.clone()));
+        app.flush_preferences();
         assert!(app.status.preferences_warning().is_some());
         app.editor.custom_width = "1280".to_string();
         app.pending_changed();
@@ -1048,6 +1089,30 @@ mod tests {
         app.load_path(Some(config));
         assert_eq!(app.status.text(), "Configuration loaded.");
         assert!(read_warning(&app));
+    }
+
+    #[test]
+    fn preference_saves_wait_for_a_quiet_period() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, config) = loaded_app(dir.path());
+        let settings = dir.path().join("settings.json");
+        let ctx = egui::Context::default();
+        // Loading schedules a save instead of writing on the spot.
+        app.save_due_preferences(&ctx);
+        assert!(!settings.exists());
+        let first_due = app.preferences_save_due.expect("save scheduled");
+        // Further changes push the write back rather than adding writes.
+        app.preferences.theme = UiTheme::Paper;
+        app.save_preferences();
+        assert!(app.preferences_save_due.unwrap() >= first_due);
+
+        app.preferences_save_due = Some(Instant::now() - Duration::from_millis(1));
+        app.save_due_preferences(&ctx);
+        assert!(app.preferences_save_due.is_none());
+        let saved = std::fs::read_to_string(&settings).unwrap();
+        assert!(saved.contains("Paper"), "{saved}");
+        assert!(saved.contains("cs2_video.txt"), "{saved}");
+        assert_eq!(app.editor.path(), Some(config.as_path()));
     }
 
     #[test]

@@ -47,13 +47,8 @@ impl ResEditApp {
                     }
                 });
             named_combo(&account_combo.response, "Steam account", ui.is_enabled());
-            if let Some(index) = wheel_selection(
-                &account_combo.response,
-                self.selected_account.unwrap_or(0),
-                self.accounts.len(),
-            ) {
-                self.request_discard(DiscardAction::SelectAccount(index));
-            }
+            // No wheel selection here: switching accounts loads another file,
+            // and scrolling past the selector must not do that.
             account_combo.response.on_hover_text(selected_label);
             ui.horizontal(|ui| {
                 if ui
@@ -753,7 +748,12 @@ mod tests {
                 "Target display" => app.selected_display,
                 _ => app.editor.selected_preset(),
             };
-            assert_eq!(after, before + 1, "{theme:?}: {name} wheel selection");
+            let expected = if name == "Steam account" {
+                before
+            } else {
+                before + 1
+            };
+            assert_eq!(after, expected, "{theme:?}: {name} wheel selection");
             assert!(!egui::Popup::is_any_open(&ctx));
         }
         if name == "Aspect ratio" {
