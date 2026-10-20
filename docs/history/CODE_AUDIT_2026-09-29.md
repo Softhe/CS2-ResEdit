@@ -1,6 +1,6 @@
 # Rust code audit, 2026-09-29
 
-This report records findings from the September 29 audit. It is not a claim that every later release has been visually tested. The September 30 UI work and 2.0.0 release are recorded in the [changelog](CHANGELOG.md).
+This report records findings from the September 29 audit. It is not a claim that every later release has been visually tested. The September 30 UI work and 2.0.0 release are recorded in the [changelog](../../CHANGELOG.md).
 
 ## Assessment
 

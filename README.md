@@ -164,7 +164,7 @@ Release assets are `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. CI checks for
 
 A version tag must match the workspace version and the heading in `RELEASE_NOTES.md`. The release workflow uploads the tested Windows assets. `build/Sign-Release.ps1` supports optional manual Authenticode signing when a trusted publisher certificate is available. The current release process does not sign the executable.
 
-See [the changelog](CHANGELOG.md), [the roadmap](ROADMAP.md), and the dated [code audit](CODE_AUDIT_2026-09-29.md) and [codebase analysis](PROJECT-ANALYSIS-2026-09-29.md) for change history and remaining work.
+See [the changelog](CHANGELOG.md), [the roadmap](ROADMAP.md), and the dated reviews in [docs/history](docs/history) for change history and remaining work.
 
 ## License
 

@@ -257,8 +257,8 @@ impl VideoConfigService {
         match write_result {
             Ok(()) => {
                 if create_backup {
-                    // Mirror the C# catch block: a pruning failure rolls the
-                    // update back instead of reporting success-with-error.
+                    // A pruning failure rolls the update back instead of
+                    // reporting success-with-error.
                     if let Err(err) = self.retain_backups(&full_path) {
                         let err = err.context("Pruning old backups failed");
                         if let Some(backup) = &backup_path {
@@ -605,8 +605,8 @@ impl TextDocument {
                 has_bom: false,
             });
         }
-        // Strict UTF-8 without BOM: mirrors UTF8Encoding(false, true), which
-        // throws on invalid bytes instead of silently corrupting the text.
+        // Strict UTF-8 without BOM: invalid bytes are an error rather than
+        // being silently replaced, which would corrupt the file on write.
         match std::str::from_utf8(bytes) {
             Ok(text) => Ok(Self {
                 text: text.to_string(),

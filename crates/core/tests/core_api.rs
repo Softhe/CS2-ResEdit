@@ -1,8 +1,6 @@
-//! Behavioral parity tests ported from `tests/CS2ResEdit.Tests` (xUnit).
-//!
-//! Each test mirrors its C# counterpart: VDF parsing, resolution catalog,
-//! video configuration updates/backups, Steam discovery, preferences, display
-//! models, and privacy-safe diagnostics.
+//! Behavior tests for the public core API: VDF parsing, the resolution
+//! catalog, video configuration updates and backups, Steam discovery,
+//! preferences, display models, and privacy-safe diagnostics.
 
 use cs2_resedit_core::{
     CoreError, DiagnosticService, DisplayInfo, DisplayResolution, PreferencesService, Resolution,
@@ -188,7 +186,7 @@ fn preserves_encoding_bom_and_line_endings() {
     for (encoding_name, bom) in cases {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(format!("{encoding_name}-{bom}.txt"));
-        // Mirrors the C# test: the BOM flag selects LF vs CRLF source text.
+        // The BOM flag also selects LF vs CRLF source text, covering both.
         let text = if bom {
             CONFIG.replace("\r\n", "\n")
         } else {
@@ -676,8 +674,8 @@ fn login_users_with_utf8_bom_are_parsed() {
 
 #[test]
 fn userdata_files_are_not_treated_as_accounts() {
-    // C# enumerates directories only; a stray file named like an account ID
-    // must not appear in discovery results.
+    // A stray file named like an account ID must not appear in discovery
+    // results.
     let dir = tempfile::tempdir().expect("tempdir");
     fs::create_dir_all(dir.path().join("userdata")).expect("mkdir");
     fs::write(dir.path().join("userdata/123456867"), "not a directory").expect("write");
@@ -809,8 +807,7 @@ fn reports_preference_save_failure() {
 
 #[test]
 fn accepts_missing_schema_version_as_one() {
-    // System.Text.Json keeps the C# property initializer default of 1 when
-    // the property is absent; the port must accept it too.
+    // Settings written by 1.x can omit the property; it means schema 1.
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("cs2_video.txt");
     fs::write(&config, valid_config_text()).expect("write");
@@ -863,8 +860,8 @@ fn rejects_malformed_typed_preference_fields() {
 
 #[test]
 fn rejects_configuration_with_invalid_utf8_bytes() {
-    // Mirrors UTF8Encoding(false, true): invalid bytes must surface as an
-    // error instead of being silently rewritten with replacement characters.
+    // Invalid bytes must surface as an error instead of being silently
+    // rewritten with replacement characters.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cs2_video.txt");
     let mut bytes = CONFIG.as_bytes().to_vec();

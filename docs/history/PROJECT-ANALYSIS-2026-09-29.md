@@ -1,6 +1,6 @@
 # CS2 ResEdit codebase analysis
 
-This report records the September 29 review of the Rust workspace. Later changes are listed in the [changelog](CHANGELOG.md).
+This report records the September 29 review of the Rust workspace. Later changes are listed in the [changelog](../../CHANGELOG.md).
 
 ## Assessment
 

@@ -18,7 +18,8 @@ pub(crate) enum EditState {
     /// No configuration loaded; nothing to compare against.
     NoFile,
     /// A configuration is loaded but the custom dimensions do not parse.
-    /// Reset stays enabled (C# parity); Apply is blocked.
+    /// Reset stays enabled so the user can return to the loaded values;
+    /// Apply is blocked.
     Invalid,
     /// Pending values match the loaded file.
     Unchanged { resolution: Resolution },
@@ -453,7 +454,7 @@ impl ResEditApp {
     }
 
     pub(super) fn has_pending_changes(&self) -> bool {
-        // Invalid custom dimensions keep Reset enabled (C# parity).
+        // Invalid custom dimensions keep Reset enabled as a way back.
         !matches!(self.edit, EditState::NoFile | EditState::Unchanged { .. })
     }
 
@@ -629,7 +630,7 @@ impl ResEditApp {
             return;
         };
         if let Err(err) = self.configs.read(&file) {
-            // Surface the real validation failure (C# showed ex.Message).
+            // Surface the real validation failure, not a generic message.
             self.set_status(&err.to_string(), true);
             return;
         }

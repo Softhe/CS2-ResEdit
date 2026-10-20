@@ -347,8 +347,6 @@ impl ResEditApp {
         self.display_changed();
     }
 
-    /// Polls the OS for topology changes, mirroring the C# app's
-    /// WM_DISPLAYCHANGE handling; adopts the new list only on change.
     /// Polls the OS for display-topology and High Contrast changes. Runs
     /// only while the window has focus: nothing can be selected in the
     /// background, and focusing the window triggers a fresh poll.
@@ -361,7 +359,7 @@ impl ResEditApp {
         self.refresh_displays();
     }
 
-    /// Follows Windows High Contrast at runtime, like the C# build did.
+    /// Follows Windows High Contrast while the app runs.
     fn refresh_high_contrast(&mut self) {
         let enabled = self.high_contrast_forced || (self.high_contrast_probe)();
         if enabled == self.palette.high_contrast {

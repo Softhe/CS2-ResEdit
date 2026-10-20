@@ -81,10 +81,10 @@ impl ThemePalette {
         }
     }
 
-    /// High-contrast fallback mirroring `SystemColors` usage in the C# theme.
+    /// High-contrast palette built from the classic Win32 system colors.
     pub fn high_contrast() -> Self {
         Self {
-            // Approximations of the Win32 system colors used by the C# build.
+            // Approximations of the default Win32 system colors.
             window: Color32::WHITE,
             card: Color32::from_rgb(240, 240, 240),
             card_hover: Color32::from_rgb(229, 241, 251),

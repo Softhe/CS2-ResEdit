@@ -85,8 +85,8 @@ impl SteamService {
                 continue;
             };
             for directory in directories.flatten() {
-                // EnumerateDirectories in .NET yields directories only; a
-                // stray file named "12345" must not become a phantom account.
+                // Only directories are accounts; a stray file named "12345"
+                // must not become a phantom account.
                 if !directory.path().is_dir() {
                     continue;
                 }
@@ -147,7 +147,7 @@ impl SteamService {
             return Ok(Vec::new());
         }
         let text = fs::read_to_string(path)?;
-        // File.ReadAllText in .NET strips a UTF-8 BOM before parsing.
+        // Strip a UTF-8 BOM, which the KeyValues parser would reject.
         let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
         let root = ValveKeyValues::parse(text)?;
         let Some(users) = root.get_objects("users").into_iter().next() else {
@@ -175,7 +175,7 @@ impl SteamService {
             );
         }
         let mut users: Vec<LoginUser> = grouped.into_values().collect();
-        // Deterministic output order (the C# GroupBy preserves group order).
+        // Deterministic output order regardless of map iteration order.
         users.sort_by_key(|user| user.steam_id64);
         Ok(users)
     }
