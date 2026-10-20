@@ -1,34 +1,32 @@
-# CS2 ResEdit v2.0.0
+# CS2 ResEdit v2.1.0
 
-Version 2.0.0 replaces the C# and WinForms application with a Rust application built with egui. The major version marks that implementation change. It still edits the same CS2 configuration files and runs as a portable Windows x64 executable.
+Version 2.1.0 fixes problems found after the 2.0.0 Rust release and adds a fallback renderer. It edits the same CS2 configuration files, keeps the same preference location, and runs as a portable Windows x64 executable.
 
-## Changes since 1.1.0
+## Fixes
 
-- Replaced the .NET source and build process with a Cargo workspace containing a reusable core and desktop UI.
-- Added Glacier, Paper, Monolith, and Canopy themes. Glacier is the default, and the selected theme persists between launches.
-- Linked running title-bar and taskbar icons to the theme. Paper uses white icons.
-- Added bounded wheel selection to all closed dropdowns and wheel adjustment to custom dimensions.
-- Added Windows-reported monitor models and display IDs, with an adapter-name fallback.
-- Made the fixed-size window compact, aligned the cards, and bounded long labels so they do not push the preview off-screen.
-- Moved Steam and display scans to background workers and added notices for slow or degraded discovery.
-- Expanded regression tests for malformed input, backups, file-change guards, failed navigation, UI interaction, layout, and native icons.
+- Read-only `cs2_video.txt` files, a common way to stop CS2 from resetting them, can be applied and restored again. They stay read-only afterwards. Version 2.0.0 failed with "Access is denied".
+- Configurations without `setting.aspectratiomode` load and update. The aspect family is inferred from the dimensions, and the field is never added.
+- The editor no longer silently fails to appear. If it cannot open its window, an error dialog explains what failed.
+- Failed Apply and Restore attempts no longer leave redundant backups that push older backups out of retention.
+- Status messages no longer hide apply and restore failures behind background scan results or keystrokes.
 
-## File handling
+## Changes
 
-The editor preserves encoding, byte-order marks, line endings, and unrelated configuration values. Apply and Restore reject a file that changed after loading. Backups remain enabled by default, and restoration creates a rollback backup first.
+- When OpenGL cannot open the window, the editor switches to Direct3D 12. This helps on some virtual machines, Remote Desktop sessions, and older drivers.
+- Apply and Restore ask for confirmation when Counter-Strike 2 is running, because the game can overwrite the file when it exits.
+- Switching accounts, reloading, or opening another file asks before discarding unapplied edits.
+- Custom width and height have `-` and `+` steppers and per-field errors. Apply shows why it is disabled.
+- `F5` refreshes accounts, `Ctrl+S` applies, and `Esc` closes the topmost dialog.
+- The palette follows Windows High Contrast while the editor runs.
+- The account selector ignores the mouse wheel; displays, presets, aspect ratios, and themes still respond to it.
+- Preferences are saved shortly after a change and when the window closes, rather than on every selection.
 
-The display selector provides availability guidance. It does not change the desktop resolution or CS2's selected monitor. Close CS2 before applying or restoring a configuration.
-
-## Upgrade
-
-Close version 1.1.0 and replace its executable with `CS2-ResEdit.exe` from this release. Existing CS2 files and recognized backups remain usable. No separately installed .NET runtime is needed.
-
-Preferences remain in `%LOCALAPPDATA%\Softhe\CS2-ResEdit\v1\settings.json`. The directory name refers to the preference schema. Older settings without a theme default to Glacier. Settings in other product directories are not imported.
+See the [changelog](CHANGELOG.md) for the complete list.
 
 ## Download and verification
 
-Download `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. This release supports Windows 10 and Windows 11, x64, with a graphics driver that supports OpenGL 2.0 or later. No installer is required.
+Download `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. This release supports Windows 10 and Windows 11, x64, with a graphics driver that supports OpenGL 2.0 or later, or Direct3D 12. No installer is required.
 
 The executable is unsigned, so SmartScreen may warn. Compare its SHA-256 hash with the sidecar before running it. A matching checksum verifies file contents, not publisher identity.
 
-The executable's File Explorer icon remains static. Theme colors apply to the running title-bar and taskbar icons.
+Close CS2 before applying or restoring a configuration.
