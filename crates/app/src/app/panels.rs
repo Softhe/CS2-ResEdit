@@ -67,7 +67,7 @@ impl ResEditApp {
                 }
                 if ui
                     .add_enabled(
-                        self.selected_path.is_some(),
+                        self.editor.path().is_some(),
                         egui::Button::new("Reload file"),
                     )
                     .on_hover_text(RELOAD_HINT)
@@ -78,7 +78,8 @@ impl ResEditApp {
             });
 
             let path_label = self
-                .selected_path
+                .editor
+                .path()
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "No valid configuration selected.".to_string());
@@ -140,17 +141,21 @@ impl ResEditApp {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("RESOLUTION PRESET").small().strong());
                     let preset_label = self
-                        .preset_choices
-                        .get(self.selected_preset)
+                        .editor
+                        .preset_choices()
+                        .get(self.editor.selected_preset())
                         .map(|c| c.label.clone())
                         .unwrap_or_default();
                     let preset_combo = egui::ComboBox::from_id_salt("Resolution preset")
                         .selected_text(preset_label)
                         .show_ui(ui, |ui| {
                             let mut clicked = None;
-                            for (index, choice) in self.preset_choices.iter().enumerate() {
+                            for (index, choice) in self.editor.preset_choices().iter().enumerate() {
                                 if ui
-                                    .selectable_label(self.selected_preset == index, &choice.label)
+                                    .selectable_label(
+                                        self.editor.selected_preset() == index,
+                                        &choice.label,
+                                    )
                                     .clicked()
                                 {
                                     clicked = Some(index);
@@ -163,8 +168,8 @@ impl ResEditApp {
                     named_combo(&preset_combo.response, "Resolution preset", ui.is_enabled());
                     if let Some(index) = wheel_selection(
                         &preset_combo.response,
-                        self.selected_preset,
-                        self.preset_choices.len(),
+                        self.editor.selected_preset(),
+                        self.editor.preset_choices().len(),
                     ) {
                         self.on_preset_selected(index);
                     }
@@ -172,11 +177,11 @@ impl ResEditApp {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("ASPECT RATIO").small().strong());
                     let aspect_combo = egui::ComboBox::from_id_salt("Aspect ratio")
-                        .selected_text(ASPECT_LABELS[self.aspect_index])
+                        .selected_text(ASPECT_LABELS[self.editor.aspect_index])
                         .show_ui(ui, |ui| {
                             for (index, label) in ASPECT_LABELS.iter().enumerate() {
                                 if ui
-                                    .selectable_label(self.aspect_index == index, *label)
+                                    .selectable_label(self.editor.aspect_index == index, *label)
                                     .clicked()
                                 {
                                     self.on_aspect_selected(index);
@@ -186,7 +191,7 @@ impl ResEditApp {
                     named_combo(&aspect_combo.response, "Aspect ratio", ui.is_enabled());
                     if let Some(index) = wheel_selection(
                         &aspect_combo.response,
-                        self.aspect_index,
+                        self.editor.aspect_index,
                         ASPECT_LABELS.len(),
                     ) {
                         self.on_aspect_selected(index);
@@ -195,7 +200,7 @@ impl ResEditApp {
             });
 
             // Custom dimensions (visible for the Custom preset only).
-            if self.selected_preset == 0 {
+            if self.editor.selected_preset() == 0 {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         let width_heading =
@@ -207,12 +212,13 @@ impl ResEditApp {
                                 .on_hover_text("Decrease width")
                                 .clicked()
                             {
-                                self.custom_width = step_dim(&self.custom_width, -1, 320);
+                                self.editor.custom_width =
+                                    step_dim(&self.editor.custom_width, -1, 320);
                                 stepped = true;
                             }
                             let response = ui
                                 .add(
-                                    egui::TextEdit::singleline(&mut self.custom_width)
+                                    egui::TextEdit::singleline(&mut self.editor.custom_width)
                                         .hint_text("320 – 32768")
                                         .desired_width(112.0),
                                 )
@@ -224,17 +230,19 @@ impl ResEditApp {
                                 .on_hover_text("Increase width")
                                 .clicked()
                             {
-                                self.custom_width = step_dim(&self.custom_width, 1, 320);
+                                self.editor.custom_width =
+                                    step_dim(&self.editor.custom_width, 1, 320);
                                 stepped = true;
                             }
                             if response.changed()
                                 || stepped
-                                || wheel_dimension(&response, &mut self.custom_width, 320)
+                                || wheel_dimension(&response, &mut self.editor.custom_width, 320)
                             {
                                 self.pending_changed();
                             }
                         });
-                        if let Some(error) = dim_field_error(&self.custom_width, 320, 32768) {
+                        if let Some(error) = dim_field_error(&self.editor.custom_width, 320, 32768)
+                        {
                             ui.label(
                                 egui::RichText::new(error)
                                     .small()
@@ -252,12 +260,13 @@ impl ResEditApp {
                                 .on_hover_text("Decrease height")
                                 .clicked()
                             {
-                                self.custom_height = step_dim(&self.custom_height, -1, 200);
+                                self.editor.custom_height =
+                                    step_dim(&self.editor.custom_height, -1, 200);
                                 stepped = true;
                             }
                             let response = ui
                                 .add(
-                                    egui::TextEdit::singleline(&mut self.custom_height)
+                                    egui::TextEdit::singleline(&mut self.editor.custom_height)
                                         .hint_text("200 – 32768")
                                         .desired_width(112.0),
                                 )
@@ -269,17 +278,19 @@ impl ResEditApp {
                                 .on_hover_text("Increase height")
                                 .clicked()
                             {
-                                self.custom_height = step_dim(&self.custom_height, 1, 200);
+                                self.editor.custom_height =
+                                    step_dim(&self.editor.custom_height, 1, 200);
                                 stepped = true;
                             }
                             if response.changed()
                                 || stepped
-                                || wheel_dimension(&response, &mut self.custom_height, 200)
+                                || wheel_dimension(&response, &mut self.editor.custom_height, 200)
                             {
                                 self.pending_changed();
                             }
                         });
-                        if let Some(error) = dim_field_error(&self.custom_height, 200, 32768) {
+                        if let Some(error) = dim_field_error(&self.editor.custom_height, 200, 32768)
+                        {
                             ui.label(
                                 egui::RichText::new(error)
                                     .small()
@@ -291,18 +302,21 @@ impl ResEditApp {
             }
 
             ui.horizontal(|ui| {
-                let availability_color = match self.availability_ok {
-                    Some(true) => self.palette.accent,
+                let availability = self.editor.availability();
+                let availability_color = match availability {
+                    Availability::Reported => self.palette.accent,
                     _ => self.palette.muted,
                 };
-                ui.label(egui::RichText::new(&self.availability).color(availability_color));
+                ui.label(egui::RichText::new(availability.label()).color(availability_color));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(&self.validation).color(self.palette.warning));
+                    ui.label(
+                        egui::RichText::new(self.editor.validation()).color(self.palette.warning),
+                    );
                 });
             });
 
             ui.checkbox(
-                &mut self.create_backup,
+                &mut self.editor.create_backup,
                 "Create a timestamped backup before applying",
             );
             stretch_card(ui, min_height)
@@ -318,32 +332,36 @@ impl ResEditApp {
             ui.heading("Preview");
             ui.label("Compare current and pending settings.");
             section_rule(ui, palette.accent);
-            ui.label(&self.current_label);
+            ui.label(self.editor.current_label());
             ui.add(
-                egui::Label::new(egui::RichText::new(&self.pending_label).strong().heading())
-                    .wrap(),
+                egui::Label::new(
+                    egui::RichText::new(self.editor.pending_label())
+                        .strong()
+                        .heading(),
+                )
+                .wrap(),
             );
-            if let Some(comparison) = &self.external_change_notice {
+            if let Some(comparison) = self.editor.external_change() {
                 ui.label(egui::RichText::new(comparison).color(palette.warning));
             }
-            if self.original.is_none() {
+            if self.editor.original().is_none() {
                 ui.label(egui::RichText::new("Select a configuration to preview changes.").small());
                 if ui.button("Browse for cs2_video.txt").clicked() {
                     self.browse();
                 }
-            } else if matches!(self.edit, EditState::Invalid) {
+            } else if self.editor.edit() == EditState::Invalid {
                 ui.label(
                     egui::RichText::new("Enter a valid resolution to preview changes.")
                         .small()
                         .color(palette.warning),
                 );
-            } else if self.has_pending_changes() {
+            } else if self.editor.has_pending_changes() {
                 ui.label(
                     egui::RichText::new("• Unsaved changes — review, then Apply")
                         .small()
                         .color(palette.accent),
                 );
-                if !self.create_backup {
+                if !self.editor.create_backup {
                     ui.label(
                         egui::RichText::new("• No backup will be created")
                             .small()
@@ -378,7 +396,7 @@ impl ResEditApp {
     pub(super) fn aspect_preview(&self, ui: &mut egui::Ui) {
         // Fall back to the last valid shape while typing passes through
         // intermediate invalid states; Apply still requires `edit`.
-        let resolution = self.edit.resolution().or(self.preview_fallback);
+        let resolution = self.editor.preview_resolution();
         // Reserve room for the caption and actions below the preview.
         let preview_height = (ui.available_height() - 90.0).clamp(80.0, 220.0);
         let (response, painter) = ui.allocate_painter(
@@ -648,7 +666,7 @@ mod tests {
         app.displays.push(app.displays[0].clone());
         app.displays[1].device_name = "DISPLAY2".into();
         app.display_labels.push(app.displays[1].label());
-        app.populate_preset_choices(0, Some(1280), Some(960));
+        app.editor.populate_preset_choices(0, Some(1280), Some(960));
         let mut combo_rect = None;
         for events in [vec![], vec![], vec![]] {
             let output = render_cards(&ctx, &mut app, events);
@@ -716,7 +734,7 @@ mod tests {
             let before = match name {
                 "Steam account" => app.selected_account.unwrap(),
                 "Target display" => app.selected_display,
-                _ => app.selected_preset,
+                _ => app.editor.selected_preset(),
             };
             let _ = render_cards(
                 &ctx,
@@ -733,7 +751,7 @@ mod tests {
             let after = match name {
                 "Steam account" => app.selected_account.unwrap(),
                 "Target display" => app.selected_display,
-                _ => app.selected_preset,
+                _ => app.editor.selected_preset(),
             };
             assert_eq!(after, before + 1, "{theme:?}: {name} wheel selection");
             assert!(!egui::Popup::is_any_open(&ctx));
@@ -760,7 +778,7 @@ mod tests {
                 );
             }
             assert_eq!(
-                app.aspect_index, 1,
+                app.editor.aspect_index, 1,
                 "{theme:?}: menu selection must update aspect"
             );
             assert!(
@@ -781,7 +799,7 @@ mod tests {
                     ],
                 );
                 assert_eq!(
-                    app.aspect_index, expected,
+                    app.editor.aspect_index, expected,
                     "{theme:?}: bounded wheel selection"
                 );
                 assert!(!egui::Popup::is_any_open(&ctx), "wheel must not open menu");

@@ -74,21 +74,21 @@ impl ResEditApp {
                     }
                     // Header badge doubles as sync state: file name plus
                     // unsaved/synced marker instead of a static label.
-                    let (badge, badge_color) = match &self.selected_path {
+                    let (badge, badge_color) = match self.editor.path() {
                         None => ("No configuration".to_string(), palette.muted),
                         Some(path) => {
                             let name = path
                                 .file_name()
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or_else(|| "cs2_video.txt".to_string());
-                            let marker = if self.has_pending_changes() {
+                            let marker = if self.editor.has_pending_changes() {
                                 "• "
                             } else {
                                 ""
                             };
                             (
                                 format!("{marker}{name}"),
-                                if self.has_pending_changes() {
+                                if self.editor.has_pending_changes() {
                                     palette.accent
                                 } else {
                                     palette.muted
@@ -97,7 +97,7 @@ impl ResEditApp {
                         }
                     };
                     ui.label(egui::RichText::new(badge).color(badge_color).strong())
-                        .on_hover_text(match &self.selected_path {
+                        .on_hover_text(match self.editor.path() {
                             None => "Select an account or browse to a config file".to_string(),
                             Some(path) => path.to_string_lossy().to_string(),
                         });
@@ -133,25 +133,29 @@ impl ResEditApp {
                         ui.label(egui::RichText::new(&self.status).color(palette.muted));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let apply =
-                            ui.add_enabled(self.can_apply(), egui::Button::new("Apply changes"));
+                        let apply = ui.add_enabled(
+                            self.editor.can_apply(),
+                            egui::Button::new("Apply changes"),
+                        );
                         if apply.clicked() {
                             self.request_apply();
                         }
                         if !apply.enabled() {
-                            apply.on_disabled_hover_text(if self.original.is_none() {
+                            apply.on_disabled_hover_text(if self.editor.original().is_none() {
                                 "Select a configuration first"
                             } else {
                                 "Change the resolution or aspect to enable Apply"
                             });
                         }
-                        let reset =
-                            ui.add_enabled(self.has_pending_changes(), egui::Button::new("Reset"));
+                        let reset = ui.add_enabled(
+                            self.editor.has_pending_changes(),
+                            egui::Button::new("Reset"),
+                        );
                         if reset.clicked() {
                             self.reset_pending();
                         }
                         if !reset.enabled() {
-                            reset.on_disabled_hover_text(if self.original.is_none() {
+                            reset.on_disabled_hover_text(if self.editor.original().is_none() {
                                 "Nothing to reset yet"
                             } else {
                                 "No pending changes to discard"
@@ -159,7 +163,7 @@ impl ResEditApp {
                         }
                         // Always-visible reason for a disabled Apply; hover
                         // tooltips alone exclude touch and keyboard users.
-                        if let Some(reason) = self.apply_blocker_reason() {
+                        if let Some(reason) = self.editor.apply_blocker_reason() {
                             ui.label(egui::RichText::new(reason).small().color(palette.muted));
                         }
                     });
@@ -180,7 +184,7 @@ impl ResEditApp {
             .default_size([560.0, 420.0])
             .min_size([420.0, 300.0])
             .show(ctx, |ui| {
-                if let Some(comparison) = &self.external_change_notice {
+                if let Some(comparison) = self.editor.external_change() {
                     ui.colored_label(self.palette.warning, comparison);
                     ui.separator();
                 }
@@ -229,7 +233,7 @@ impl ResEditApp {
         ui.label(backup_label(backup));
         ui.add(egui::Label::new(egui::RichText::new(&backup.path).monospace().small()).truncate())
             .on_hover_text(&backup.path);
-        match self.original {
+        match self.editor.original() {
             Some(original) if original != backup.state => {
                 ui.label(format!(
                     "Current file: {} — restoring will overwrite these values.",
