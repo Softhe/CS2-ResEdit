@@ -77,9 +77,10 @@ fn main() {
         )
         .map_err(|err| (renderer, err.to_string()))
     };
-    let setting = std::env::var_os("CS2_RESEDIT_RENDERER").unwrap_or_default();
-    let renderers = requested_renderers(&setting.to_string_lossy())
-        .unwrap_or_else(|message| fail_startup(&message));
+    let setting = std::env::var_os("CS2_RESEDIT_RENDERER");
+    let setting = setting.as_ref().map(|value| value.to_string_lossy());
+    let renderers =
+        requested_renderers(setting.as_deref()).unwrap_or_else(|message| fail_startup(&message));
     if let Err(failures) = run_with_fallback(renderers, launch) {
         fail_startup(&startup_failure_text(&failures));
     }
@@ -106,22 +107,25 @@ impl Renderer {
 /// Renderers to try in order for a `CS2_RESEDIT_RENDERER` value. OpenGL is
 /// the tested default; Direct3D 12 covers machines without a usable OpenGL
 /// driver, such as some virtual machines and Remote Desktop sessions. An
-/// empty value tries both; `opengl` or `d3d12` pins one. Anything else is an
+/// unset value tries both; `opengl` or `d3d12` pins one. Anything else is an
 /// error, so a typo cannot silently select a different renderer.
-fn requested_renderers(setting: &str) -> Result<Vec<Renderer>, String> {
-    match setting.trim().to_ascii_lowercase().as_str() {
-        "" => Ok(vec![
+fn requested_renderers(setting: Option<&str>) -> Result<Vec<Renderer>, String> {
+    match setting
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None => Ok(vec![
             Renderer::OpenGl,
             #[cfg(windows)]
             Renderer::Direct3D12,
         ]),
-        "opengl" | "gl" | "glow" => Ok(vec![Renderer::OpenGl]),
+        Some("opengl" | "gl" | "glow") => Ok(vec![Renderer::OpenGl]),
         #[cfg(windows)]
-        "d3d12" | "dx12" | "wgpu" => Ok(vec![Renderer::Direct3D12]),
+        Some("d3d12" | "dx12" | "wgpu") => Ok(vec![Renderer::Direct3D12]),
         _ => Err(format!(
             "CS2_RESEDIT_RENDERER is set to '{}', which is not a supported renderer. \
              Use {}, or remove the variable to choose automatically.",
-            setting.trim(),
+            setting.unwrap_or_default().trim(),
             if cfg!(windows) {
                 "opengl or d3d12"
             } else {
@@ -353,22 +357,23 @@ mod tests {
 
     #[test]
     fn renderer_setting_accepts_known_names_and_rejects_typos() {
-        let automatic = super::requested_renderers("").unwrap();
+        let automatic = super::requested_renderers(None).unwrap();
         assert_eq!(automatic[0], Renderer::OpenGl);
-        assert_eq!(automatic, super::requested_renderers("  ").unwrap());
+        assert!(super::requested_renderers(Some("")).is_err());
+        assert!(super::requested_renderers(Some("  ")).is_err());
         assert_eq!(
-            super::requested_renderers(" OpenGL ").unwrap(),
+            super::requested_renderers(Some(" OpenGL ")).unwrap(),
             vec![Renderer::OpenGl]
         );
         #[cfg(windows)]
         {
             assert_eq!(automatic, vec![Renderer::OpenGl, Renderer::Direct3D12]);
             assert_eq!(
-                super::requested_renderers("D3D12").unwrap(),
+                super::requested_renderers(Some("D3D12")).unwrap(),
                 vec![Renderer::Direct3D12]
             );
         }
-        let error = super::requested_renderers("d3d21").unwrap_err();
+        let error = super::requested_renderers(Some("d3d21")).unwrap_err();
         assert!(error.contains("'d3d21'"), "{error}");
     }
 
