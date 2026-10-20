@@ -1223,6 +1223,90 @@ mod tests {
         assert!(missing.is_empty(), "uncovered UI glyphs: {missing:?}");
     }
 
+    #[test]
+    fn footer_actions_stay_visible_with_long_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = loaded_app(dir.path());
+        app.editor.custom_width = "1280".into();
+        app.pending_changed();
+        app.status.report(Notice::warning(
+            "The configuration changed outside CS2 ResEdit. Reload it before applying changes. "
+                .repeat(3),
+        ));
+        app.status.preferences_saved(Err(
+            "Preferences could not be saved: access to the settings folder was denied. ".repeat(2),
+        ));
+        // Clicking Apply while CS2 "runs" only opens the prompt, so the test
+        // can prove the click landed without writing the file.
+        app.game_probe = || Some(true);
+
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let (width, height) = (829.0, 544.0);
+        let render = |app: &mut ResEditApp, events: Vec<egui::Event>| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, height),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.footer_panel(ctx, false);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        app.show_main_cards(ui);
+                    });
+                },
+            )
+        };
+        let mut buttons = std::collections::HashMap::new();
+        for _ in 0..3 {
+            let output = render(&mut app, vec![]);
+            for (_, node) in output.platform_output.accesskit_update.unwrap().nodes {
+                if let (Some(label), Some(bounds)) = (node.label(), node.bounds()) {
+                    if label == "Apply changes" || label == "Reset" {
+                        buttons.insert(label.to_string(), bounds);
+                    }
+                }
+            }
+        }
+        for name in ["Apply changes", "Reset"] {
+            let rect = buttons
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} missing"));
+            assert!(
+                rect.x0 >= 0.0 && rect.x1 <= f64::from(width) && rect.y1 <= f64::from(height),
+                "{name} outside the window: {rect:?}"
+            );
+            assert!(rect.x1 - rect.x0 > 20.0, "{name} squeezed: {rect:?}");
+        }
+        let apply = buttons["Apply changes"];
+        let pos = egui::pos2(
+            ((apply.x0 + apply.x1) / 2.0) as f32,
+            ((apply.y0 + apply.y1) / 2.0) as f32,
+        );
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert_eq!(
+            app.confirmation,
+            Some(Confirmation::GameRunning(GuardedWrite::Apply))
+        );
+    }
+
     fn loaded_app(dir: &Path) -> (ResEditApp, PathBuf) {
         let config = dir.join("cs2_video.txt");
         std::fs::write(

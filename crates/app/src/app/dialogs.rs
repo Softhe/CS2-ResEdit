@@ -102,58 +102,65 @@ impl ResEditApp {
         let palette = self.palette;
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.add_enabled_ui(!modal_open, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(activity) = self.scan_activity() {
-                        ui.spinner();
-                        ui.label(activity);
-                    } else if let Some((notice, _)) = &self.scan_notice {
-                        ui.label(notice);
+                // The actions are laid out first, from the right edge, so
+                // long messages wrap in the remaining width instead of pushing
+                // Apply and Reset out of the window.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let apply =
+                        ui.add_enabled(self.editor.can_apply(), egui::Button::new("Apply changes"));
+                    if apply.clicked() {
+                        self.request_apply();
                     }
-                    match self.status.current() {
-                        Some(notice) if notice.warning => warning_chip(ui, palette, &notice.text),
-                        Some(notice) => {
-                            ui.label(egui::RichText::new(&notice.text).color(palette.muted));
-                        }
-                        None => {}
+                    if let Some(reason) = self.editor.apply_blocker_reason() {
+                        apply.on_disabled_hover_text(reason);
                     }
-                    // Preference problems sit beside the main message so an
-                    // apply result and a settings warning are both visible.
-                    if let Some(warning) = self.status.preferences_warning() {
-                        warning_chip(ui, palette, warning);
+                    let reset = ui.add_enabled(
+                        self.editor.has_pending_changes(),
+                        egui::Button::new("Reset"),
+                    );
+                    if reset.clicked() {
+                        self.reset_pending();
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let apply = ui.add_enabled(
-                            self.editor.can_apply(),
-                            egui::Button::new("Apply changes"),
-                        );
-                        if apply.clicked() {
-                            self.request_apply();
-                        }
-                        if !apply.enabled() {
-                            apply.on_disabled_hover_text(if self.editor.original().is_none() {
-                                "Select a configuration first"
-                            } else {
-                                "Change the resolution or aspect to enable Apply"
+                    if !reset.enabled() {
+                        reset.on_disabled_hover_text(if self.editor.original().is_none() {
+                            "Nothing to reset yet"
+                        } else {
+                            "No pending changes to discard"
+                        });
+                    }
+                    // Always-visible reason for a disabled Apply; hover
+                    // tooltips alone exclude touch and keyboard users.
+                    if let Some(reason) = self.editor.apply_blocker_reason() {
+                        ui.label(egui::RichText::new(reason).small().color(palette.muted));
+                    }
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        if let Some(activity) = self.scan_activity() {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(activity);
                             });
+                        } else if let Some((notice, _)) = &self.scan_notice {
+                            ui.label(notice);
                         }
-                        let reset = ui.add_enabled(
-                            self.editor.has_pending_changes(),
-                            egui::Button::new("Reset"),
-                        );
-                        if reset.clicked() {
-                            self.reset_pending();
+                        match self.status.current() {
+                            Some(notice) if notice.warning => {
+                                warning_chip(ui, palette, &notice.text);
+                            }
+                            Some(notice) => {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&notice.text).color(palette.muted),
+                                    )
+                                    .wrap(),
+                                );
+                            }
+                            None => {}
                         }
-                        if !reset.enabled() {
-                            reset.on_disabled_hover_text(if self.editor.original().is_none() {
-                                "Nothing to reset yet"
-                            } else {
-                                "No pending changes to discard"
-                            });
-                        }
-                        // Always-visible reason for a disabled Apply; hover
-                        // tooltips alone exclude touch and keyboard users.
-                        if let Some(reason) = self.editor.apply_blocker_reason() {
-                            ui.label(egui::RichText::new(reason).small().color(palette.muted));
+                        // Preference problems sit below the main message so
+                        // an apply result and a settings warning are both
+                        // visible.
+                        if let Some(warning) = self.status.preferences_warning() {
+                            warning_chip(ui, palette, warning);
                         }
                     });
                 });
@@ -375,7 +382,10 @@ fn warning_chip(ui: &mut egui::Ui, palette: ThemePalette, text: &str) {
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(8.0)
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(format!("⚠ {text}")).color(palette.warning));
+            ui.add(
+                egui::Label::new(egui::RichText::new(format!("⚠ {text}")).color(palette.warning))
+                    .wrap(),
+            );
         });
 }
 

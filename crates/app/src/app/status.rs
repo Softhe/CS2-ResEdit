@@ -44,20 +44,15 @@ impl Notice {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PreferencesIssue {
-    /// Settings could not be read at startup; defaults are in use. Stays
-    /// for the session, because the remembered selections are gone.
-    Read(String),
-    /// The last save failed. Cleared by the next successful save.
-    Save(String),
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct StatusLine {
     operation: Option<Notice>,
     event: Option<Notice>,
-    preferences: Option<PreferencesIssue>,
+    /// Settings could not be read at startup; defaults are in use. Stays
+    /// for the session, because the remembered selections are gone.
+    preferences_read: Option<String>,
+    /// The last save failed. Cleared by the next successful save.
+    preferences_save: Option<String>,
 }
 
 impl StatusLine {
@@ -108,28 +103,21 @@ impl StatusLine {
     }
 
     pub(crate) fn preferences_read_failed(&mut self, message: String) {
-        self.preferences = Some(PreferencesIssue::Read(message));
+        self.preferences_read = Some(message);
     }
 
-    /// Records the outcome of a preferences save.
+    /// Records the outcome of a preferences save. Only a save problem is
+    /// cleared by a later success; a startup read failure stays.
     pub(crate) fn preferences_saved(&mut self, result: Result<(), String>) {
-        match result {
-            Err(message) => self.preferences = Some(PreferencesIssue::Save(message)),
-            Ok(()) => {
-                if matches!(self.preferences, Some(PreferencesIssue::Save(_))) {
-                    self.preferences = None;
-                }
-            }
-        }
+        self.preferences_save = result.err();
     }
 
+    /// The preference problem to show: a failing save first, because the
+    /// user can still act on it, otherwise the startup read failure.
     pub(crate) fn preferences_warning(&self) -> Option<&str> {
-        match &self.preferences {
-            Some(PreferencesIssue::Read(message) | PreferencesIssue::Save(message)) => {
-                Some(message)
-            }
-            None => None,
-        }
+        self.preferences_save
+            .as_deref()
+            .or(self.preferences_read.as_deref())
     }
 }
 
@@ -180,6 +168,12 @@ mod tests {
         assert_eq!(status.preferences_warning(), None);
 
         status.preferences_read_failed("invalid JSON".into());
+        status.preferences_saved(Ok(()));
+        assert_eq!(status.preferences_warning(), Some("invalid JSON"));
+        // A failed save shows first, and its recovery brings the read
+        // failure back instead of losing it.
+        status.preferences_saved(Err("disk full".into()));
+        assert_eq!(status.preferences_warning(), Some("disk full"));
         status.preferences_saved(Ok(()));
         assert_eq!(status.preferences_warning(), Some("invalid JSON"));
         // Neither kind affects the main message.
