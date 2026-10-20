@@ -60,16 +60,7 @@ impl ResEditApp {
                     if previous != self.preferences.theme {
                         self.palette = ThemePalette::for_theme(self.preferences.theme);
                         self.theme_applied = false;
-                        self.preferences = self.preferences_service().save_selection_with_theme(
-                            self.preferences.last_account_id.as_deref(),
-                            self.preferences.last_config_path.as_deref().map(Path::new),
-                            &self.preferences.recent_config_paths,
-                            self.preferences.theme,
-                            self.settings_path_opt(),
-                        );
-                        if let Some(warning) = self.preferences.warning.clone() {
-                            self.set_status(&warning, true);
-                        }
+                        self.save_preferences();
                         ctx.request_repaint();
                     }
                     // Header badge doubles as sync state: file name plus
@@ -118,19 +109,17 @@ impl ResEditApp {
                     } else if let Some((notice, _)) = &self.scan_notice {
                         ui.label(notice);
                     }
-                    if self.status_warning {
-                        egui::Frame::new()
-                            .fill(palette.accent_soft)
-                            .corner_radius(egui::CornerRadius::same(6))
-                            .inner_margin(8.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("⚠ {}", self.status))
-                                        .color(palette.warning),
-                                );
-                            });
-                    } else {
-                        ui.label(egui::RichText::new(&self.status).color(palette.muted));
+                    match self.status.current() {
+                        Some(notice) if notice.warning => warning_chip(ui, palette, &notice.text),
+                        Some(notice) => {
+                            ui.label(egui::RichText::new(&notice.text).color(palette.muted));
+                        }
+                        None => {}
+                    }
+                    // Preference problems sit beside the main message so an
+                    // apply result and a settings warning are both visible.
+                    if let Some(warning) = self.status.preferences_warning() {
+                        warning_chip(ui, palette, warning);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let apply = ui.add_enabled(
@@ -298,16 +287,17 @@ impl ResEditApp {
                                 .add_filter("JSON report (*.json)", &["json"])
                                 .save_file()
                             {
-                                match export_diagnostics(&path, &self.diagnostics_json) {
-                                    Ok(()) => self.set_status(
-                                        &format!("Diagnostics exported to {}.", path.display()),
-                                        false,
-                                    ),
-                                    Err(err) => self.set_status(
-                                        &format!("Diagnostics export failed: {err}"),
-                                        true,
-                                    ),
-                                }
+                                self.status.report(
+                                    match export_diagnostics(&path, &self.diagnostics_json) {
+                                        Ok(()) => Notice::info(format!(
+                                            "Diagnostics exported to {}.",
+                                            path.display()
+                                        )),
+                                        Err(err) => Notice::warning(format!(
+                                            "Diagnostics export failed: {err}"
+                                        )),
+                                    },
+                                );
                             }
                         }
                     });
@@ -376,6 +366,17 @@ impl ResEditApp {
             None => {}
         }
     }
+}
+
+/// A highlighted warning message in the footer.
+fn warning_chip(ui: &mut egui::Ui, palette: ThemePalette, text: &str) {
+    egui::Frame::new()
+        .fill(palette.accent_soft)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(8.0)
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(format!("⚠ {text}")).color(palette.warning));
+        });
 }
 
 /// One-line backup summary: local timestamp, dimensions, and aspect family.

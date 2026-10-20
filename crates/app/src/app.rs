@@ -22,10 +22,12 @@ mod controller;
 mod dialogs;
 mod editor;
 mod panels;
+mod status;
 #[cfg(test)]
 use panels::{preview_rectangle, preview_viewport};
 
 use editor::{describe_video_state, Availability, EditState, Editor};
+use status::{Notice, StatusLine};
 
 const ASPECT_LABELS: [&str; 3] = ["4:3 / 5:4", "16:9", "16:10"];
 const DISPLAY_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -108,9 +110,8 @@ pub struct ResEditApp {
 
     /// The configuration being edited and its pending values.
     editor: Editor,
-    status: String,
-    status_warning: bool,
-    operation_status: Option<(String, bool)>,
+    /// Footer message and its precedence rules.
+    status: StatusLine,
 
     show_backups: bool,
     backups: Vec<cs2_resedit_core::BackupInfo>,
@@ -120,12 +121,6 @@ pub struct ResEditApp {
     diagnostics_summary: String,
     diagnostics_json: String,
     discovered_root_count: usize,
-    /// Preferences-load warning from startup. `load_path` saves preferences
-    /// on every successful load, and a save result carries `warning: None`
-    /// unless the save itself fails — without this field the original
-    /// corrupt-settings warning would be silently discarded after the first
-    /// save (see `load_path`).
-    load_warning: Option<String>,
     display_labels: Vec<String>,
     initialized: bool,
     theme_applied: bool,
@@ -172,9 +167,7 @@ impl ResEditApp {
             displays: Vec::new(),
             selected_display: 0,
             editor: Editor::new(VideoConfigService),
-            status: String::new(),
-            status_warning: false,
-            operation_status: None,
+            status: StatusLine::default(),
             show_backups: false,
             backups: Vec::new(),
             selected_backup: None,
@@ -183,7 +176,6 @@ impl ResEditApp {
             diagnostics_summary: String::new(),
             diagnostics_json: String::new(),
             discovered_root_count: 0,
-            load_warning: None,
             display_labels: Vec::new(),
             initialized: false,
             theme_applied: false,
@@ -218,12 +210,8 @@ impl ResEditApp {
             self.palette = ThemePalette::for_theme(self.preferences.theme);
             self.theme_applied = false;
         }
-        // Keep the read-time warning aside: `load_path` saves preferences on
-        // every successful load and would otherwise clobber it with a fresh
-        // `warning: None` result.
-        self.load_warning = self.preferences.warning.clone();
-        if let Some(warning) = self.load_warning.clone() {
-            self.set_status(&warning, true);
+        if let Some(warning) = self.preferences.warning.take() {
+            self.status.preferences_read_failed(warning);
         }
         self.refresh_displays();
         self.refresh_accounts();
@@ -332,12 +320,13 @@ impl ResEditApp {
                     self.adopt_accounts(root_count, accounts);
                     self.note_scan("Steam account scan", elapsed);
                     if !warnings.is_empty() {
-                        self.set_background_status("Steam accounts were found, but account names could not be read from one or more Steam installations.", true);
+                        self.status.report_background(Notice::warning("Steam accounts were found, but account names could not be read from one or more Steam installations."));
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.account_scan = None;
-                    self.set_background_status("Steam account scan failed.", true);
+                    self.status
+                        .report_background(Notice::warning("Steam account scan failed."));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -354,7 +343,8 @@ impl ResEditApp {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.display_scan = None;
-                    self.set_background_status("Display scan failed.", true);
+                    self.status
+                        .report_background(Notice::warning("Display scan failed."));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -362,16 +352,17 @@ impl ResEditApp {
         if let Some(scan) = &mut self.account_scan {
             if !scan.timeout_reported && scan.started.elapsed() >= SCAN_TIMEOUT {
                 scan.timeout_reported = true;
-                self.set_background_status(
+                self.status.report_background(Notice::warning(
                     "Steam account scan is taking longer than expected.",
-                    true,
-                );
+                ));
             }
         }
         if let Some(scan) = &mut self.display_scan {
             if !scan.timeout_reported && scan.started.elapsed() >= SCAN_TIMEOUT {
                 scan.timeout_reported = true;
-                self.set_background_status("Display scan is taking longer than expected.", true);
+                self.status.report_background(Notice::warning(
+                    "Display scan is taking longer than expected.",
+                ));
             }
         }
         if self
@@ -451,21 +442,21 @@ impl ResEditApp {
         self.show_diagnostics = true;
     }
 
-    fn set_status(&mut self, message: &str, warning: bool) {
-        self.operation_status = None;
-        self.status = message.to_string();
-        self.status_warning = warning;
-    }
-
-    fn set_operation_status(&mut self, message: &str, warning: bool) {
-        self.set_status(message, warning);
-        self.operation_status = Some((message.to_string(), warning));
-    }
-
-    fn set_background_status(&mut self, message: &str, warning: bool) {
-        if self.operation_status.is_none() {
-            self.set_status(message, warning);
-        }
+    /// Writes the in-memory preferences and records whether that worked.
+    fn save_preferences(&mut self) {
+        let saved = self.preferences_service().save_selection_with_theme(
+            self.preferences.last_account_id.as_deref(),
+            self.preferences.last_config_path.as_deref().map(Path::new),
+            &self.preferences.recent_config_paths,
+            self.preferences.theme,
+            self.settings_path_opt(),
+        );
+        self.status
+            .preferences_saved(saved.warning.clone().map_or(Ok(()), Err));
+        self.preferences = Preferences {
+            warning: None,
+            ..saved
+        };
     }
 
     /// Draws the settings and preview cards side by side at equal height in
@@ -517,7 +508,9 @@ impl eframe::App for ResEditApp {
             if let Some(icon) = self.palette.window_icon() {
                 #[cfg(windows)]
                 if let Err(error) = self.taskbar_icon.update(_frame, &icon) {
-                    self.set_status(&format!("Taskbar icon could not be updated: {error}"), true);
+                    self.status.report(Notice::warning(format!(
+                        "Taskbar icon could not be updated: {error}"
+                    )));
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(icon)));
             }
@@ -624,7 +617,7 @@ mod tests {
             app.editor.custom_width = "1280".into();
             app.pending_changed();
             app.apply();
-            assert!(app.status.starts_with("Changes applied."));
+            assert!(app.status.text().starts_with("Changes applied."));
             assert!(!app.editor.has_pending_changes());
             if preference_failure {
                 std::fs::remove_file(&settings).unwrap();
@@ -633,17 +626,26 @@ mod tests {
                 std::fs::write(&config, "invalid configuration").unwrap();
             }
             app.adopt_accounts(0, vec![custom_account(&config)]);
-            assert!(app.status_warning, "new warning hidden: {}", app.status);
-            assert!(!app.status.starts_with("Changes applied."));
-            assert!(app.operation_status.is_none());
             assert_eq!(app.editor.path(), Some(config.as_path()));
             assert_eq!(app.editor.original().unwrap().width, 1280);
             if preference_failure {
-                assert!(app.status.contains("Preferences could not be saved"));
+                // The settings warning has its own slot; the apply result
+                // for the unchanged file stays visible beside it.
+                let warning = app.status.preferences_warning().expect("warning");
+                assert!(warning.contains("Preferences could not be saved"));
+                assert!(app.status.text().starts_with("Changes applied."));
+            } else {
+                // A reload error replaces the earlier operation result.
+                assert!(
+                    app.status.is_warning(),
+                    "warning hidden: {}",
+                    app.status.text()
+                );
+                assert!(!app.status.has_operation());
             }
-            let warning = app.status.clone();
+            let shown = app.status.text().to_string();
             app.pending_changed();
-            assert_eq!(app.status, warning);
+            assert_eq!(app.status.text(), shown);
         }
     }
 
@@ -657,27 +659,30 @@ mod tests {
         app.editor.custom_width = "1280".into();
         app.pending_changed();
         app.apply();
-        assert!(app.status.starts_with("Changes applied."));
-        let applied = app.status.clone();
+        assert!(app.status.text().starts_with("Changes applied."));
+        let applied = app.status.text().to_string();
         app.editor.custom_width = "1600".into();
         app.pending_changed();
         app.display_changed();
         app.adopt_accounts(0, vec![custom_account(&config)]);
-        assert_eq!(app.status, applied);
+        assert_eq!(app.status.text(), applied);
         app.open_backups();
         app.selected_backup = Some(0);
         app.restore_selected_backup();
-        assert!(app.status.starts_with("Backup restored successfully."));
-        let restored = app.status.clone();
+        assert!(app
+            .status
+            .text()
+            .starts_with("Backup restored successfully."));
+        let restored = app.status.text().to_string();
         app.editor.custom_width = "1600".into();
         app.pending_changed();
         app.adopt_displays(Vec::new());
         app.adopt_accounts(0, vec![custom_account(&config)]);
-        assert_eq!(app.status, restored);
+        assert_eq!(app.status.text(), restored);
         std::fs::write(&config, "external edit").unwrap();
         app.apply();
-        assert!(app.status_warning);
-        let failure = app.status.clone();
+        assert!(app.status.is_warning());
+        let failure = app.status.text().to_string();
         let (sender, receiver) = mpsc::channel();
         app.account_scan = Some(PendingScan {
             receiver,
@@ -692,7 +697,7 @@ mod tests {
             ))
             .unwrap();
         app.poll_scans();
-        assert_eq!(app.status, failure);
+        assert_eq!(app.status.text(), failure);
         assert!(app.editor.has_pending_changes());
     }
 
@@ -868,7 +873,7 @@ mod tests {
         .expect("write config");
         let mut app = ResEditApp::new(Some(dir.path().to_path_buf()), None, None);
         app.load_path(Some(config.clone()));
-        assert!(app.status_warning);
+        assert!(app.status.preferences_warning().is_some());
         app.editor.custom_width = "1280".to_string();
         app.pending_changed();
         app.apply();
@@ -877,9 +882,11 @@ mod tests {
         app.selected_backup = Some(0);
         app.restore_selected_backup();
         assert!(!app.show_backups);
-        assert!(app.status_warning);
-        assert!(app.status.contains("Backup restored successfully."));
-        assert!(app.status.contains("Preferences could not be saved"));
+        assert_eq!(app.status.text(), "Backup restored successfully.");
+        assert!(app
+            .status
+            .preferences_warning()
+            .is_some_and(|warning| warning.contains("Preferences could not be saved")));
     }
 
     #[test]
@@ -898,7 +905,7 @@ mod tests {
         app.adopt_accounts(0, vec![custom_account(&config)]);
         assert_eq!(app.editor.custom_width, "1280");
         assert!(app.editor.has_pending_changes());
-        assert!(app.status.contains("Unsaved changes kept"));
+        assert!(app.status.text().contains("Unsaved changes kept"));
     }
 
     #[test]
@@ -930,7 +937,7 @@ mod tests {
 
         app.poll_scans();
         assert!(!app.scans_need_fast_poll());
-        assert!(app.status.contains("longer than expected"));
+        assert!(app.status.text().contains("longer than expected"));
 
         sender.send(Vec::new()).unwrap();
         app.poll_scans();
@@ -1028,22 +1035,42 @@ mod tests {
         .unwrap();
         let mut app = ResEditApp::new(Some(settings), None, None);
         app.initialize_data();
-        assert!(app.load_warning.is_some());
-        let warning = app.status.clone();
-        assert!(app.status_warning);
-        // Simulate the auto-select load path from adopt_accounts.
+        let read_warning = |app: &ResEditApp| {
+            app.status
+                .preferences_warning()
+                .is_some_and(|warning| warning.contains("Preferences could not be loaded"))
+        };
+        assert!(read_warning(&app));
+        // Simulate the auto-select load path from adopt_accounts. Its save
+        // succeeds, but the startup read failure stays visible.
         app.selected_account = Some(0);
         app.accounts.push(custom_account(&config));
         app.load_path(Some(config));
-        assert!(app.status_warning);
-        assert!(app.status.contains("Configuration loaded."));
-        assert!(
-            app.status.contains("Preferences could not be loaded")
-                || warning.contains("Preferences could not be loaded"),
-            "read warning lost: {}",
-            app.status
+        assert_eq!(app.status.text(), "Configuration loaded.");
+        assert!(read_warning(&app));
+    }
+
+    #[test]
+    fn loading_reports_configuration_loaded_after_the_edit_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, config) = loaded_app(dir.path());
+        assert_eq!(app.status.text(), "Configuration loaded.");
+        let other = dir.path().join("other.txt");
+        std::fs::copy(&config, &other).unwrap();
+        app.adopt_accounts(1, vec![custom_account(&other)]);
+        assert_eq!(app.editor.path(), Some(config.as_path()), "keeps the file");
+        assert_eq!(
+            app.status.text(),
+            "Steam accounts refreshed. Configuration loaded."
         );
-        assert!(app.load_warning.is_none());
+
+        let mut fresh = ResEditApp::new(Some(dir.path().join("settings.json")), None, None);
+        fresh.preferences.last_config_path = None;
+        fresh.adopt_accounts(1, vec![custom_account(&other)]);
+        assert_eq!(
+            fresh.status.text(),
+            "Steam accounts refreshed. Configuration loaded."
+        );
     }
 
     #[test]
@@ -1054,10 +1081,11 @@ mod tests {
         app.editor.aspect_index = 1;
         app.editor.custom_width = "1920".to_string();
         app.editor.custom_height = "1080".to_string();
-        app.set_status("Apply failed: disk full", true);
+        app.status
+            .report(Notice::warning("Apply failed: disk full"));
         app.pending_changed();
-        assert!(app.status_warning);
-        assert_eq!(app.status, "Apply failed: disk full");
+        assert!(app.status.is_warning());
+        assert_eq!(app.status.text(), "Apply failed: disk full");
     }
 
     #[test]
@@ -1081,7 +1109,7 @@ mod tests {
         std::fs::write(&config, "invalid").unwrap();
         // Refresh snapshot mismatch path: external edit then restore attempt.
         app.restore_selected_backup();
-        assert!(app.status_warning);
+        assert!(app.status.is_warning());
         assert!(!app.confirm_restore);
     }
 
@@ -1093,13 +1121,14 @@ mod tests {
         app.editor.aspect_index = 1;
         app.editor.custom_width = "1920".to_string();
         app.editor.custom_height = "1080".to_string();
-        app.set_status("Apply failed: disk full", true);
+        app.status
+            .report(Notice::warning("Apply failed: disk full"));
         app.editor.custom_width = "not-a-number".to_string();
         app.pending_changed();
         assert!(matches!(app.editor.edit(), EditState::Invalid));
         assert!(!app.editor.validation().is_empty());
-        assert!(app.status_warning);
-        assert_eq!(app.status, "Apply failed: disk full");
+        assert!(app.status.is_warning());
+        assert_eq!(app.status.text(), "Apply failed: disk full");
         assert!(!app.editor.can_apply());
         assert_eq!(
             app.editor.apply_blocker_reason(),
@@ -1162,7 +1191,7 @@ mod tests {
 
         app.request_apply();
         app.confirm();
-        assert!(app.status.starts_with("Changes applied."));
+        assert!(app.status.text().starts_with("Changes applied."));
         assert!(app.confirmation.is_none());
 
         app.open_backups();
@@ -1173,7 +1202,10 @@ mod tests {
             Some(Confirmation::GameRunning(GuardedWrite::Restore))
         );
         app.confirm();
-        assert!(app.status.starts_with("Backup restored successfully."));
+        assert!(app
+            .status
+            .text()
+            .starts_with("Backup restored successfully."));
 
         // An unreadable process list does not block the write.
         app.game_probe = || None;
@@ -1181,7 +1213,7 @@ mod tests {
         app.pending_changed();
         app.request_apply();
         assert!(app.confirmation.is_none());
-        assert!(app.status.starts_with("Changes applied."));
+        assert!(app.status.text().starts_with("Changes applied."));
     }
 
     #[test]
@@ -1245,7 +1277,11 @@ mod tests {
         app.confirm();
         assert_eq!(app.editor.path(), Some(config.as_path()));
         assert!(app.editor.has_pending_changes());
-        assert!(app.status.contains("no longer listed"), "{}", app.status);
+        assert!(
+            app.status.text().contains("no longer listed"),
+            "{}",
+            app.status.text()
+        );
     }
 
     #[test]

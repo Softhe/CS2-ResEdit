@@ -4,10 +4,13 @@
 //! `Editor` owns the file state and its transitions. This module decides
 //! which file to edit (accounts, Browse, reload), asks before discarding
 //! edits or writing while CS2 runs, remembers selections in preferences, and
-//! turns `Editor` outcomes into status messages.
+//! turns `Editor` outcomes into status notices.
 
 use super::editor::{ApplyOutcome, WriteError};
 use super::*;
+use cs2_resedit_core::CoreError;
+
+const NO_CONFIG: &str = "This account does not have a CS2 video configuration.";
 
 impl ResEditApp {
     pub(super) fn select_account(&mut self, index: usize) {
@@ -20,17 +23,12 @@ impl ResEditApp {
             }
         } else {
             self.selected_account = Some(index);
-            self.load_path(None);
-            self.set_status(
-                "This account does not have a CS2 video configuration.",
-                true,
-            );
+            self.close_file();
+            self.status.report(Notice::warning(NO_CONFIG));
         }
     }
 
     pub(super) fn adopt_accounts(&mut self, root_count: usize, discovered: Vec<SteamAccount>) {
-        let prior_operation = self.operation_status.clone();
-        let mut refresh_has_warning = false;
         let prior_path = self.editor.path().map(Path::to_path_buf);
         let had_pending_changes = self.editor.has_pending_changes();
         self.accounts.clear();
@@ -84,129 +82,106 @@ impl ResEditApp {
             selection = self.accounts.iter().position(|a| a.has_config);
         }
         self.selected_account = selection;
-        if self.accounts.is_empty() {
-            self.set_background_status(
-                "No Steam accounts found. Use Browse to select cs2_video.txt.",
-                false,
-            );
+
+        let refreshed = Notice::info(if self.accounts.is_empty() {
+            "No Steam accounts found. Use Browse to select cs2_video.txt."
         } else {
-            self.set_background_status("Steam accounts refreshed.", false);
-        }
-        // Load the newly selected account.
-        if let Some(index) = self.selected_account {
-            let account = self.accounts[index].clone();
-            if account.has_config {
+            "Steam accounts refreshed."
+        });
+        let notice = match self
+            .selected_account
+            .map(|index| self.accounts[index].clone())
+        {
+            None => {
+                self.close_file();
+                refreshed
+            }
+            Some(account) if !account.has_config => {
+                self.close_file();
+                refreshed.then(Notice::warning(NO_CONFIG))
+            }
+            Some(account)
                 if had_pending_changes
                     && prior_path.as_ref().is_some_and(|prior| {
                         fsutil::paths_equal_ci(&account.config_path, &prior.to_string_lossy())
-                    })
-                {
-                    self.set_background_status(
-                        "Steam accounts refreshed. Unsaved changes kept.",
-                        false,
-                    );
-                } else if !self.load_path(Some(PathBuf::from(&account.config_path))) {
-                    refresh_has_warning = true;
+                    }) =>
+            {
+                refreshed.then(Notice::info("Unsaved changes kept."))
+            }
+            Some(account) => match self.open_path(PathBuf::from(&account.config_path)) {
+                Ok(()) => refreshed.then(Notice::info("Configuration loaded.")),
+                Err(err) => {
                     self.selected_account = prior_path.as_ref().and_then(|prior| {
                         self.accounts.iter().position(|entry| {
                             fsutil::paths_equal_ci(&entry.config_path, &prior.to_string_lossy())
                         })
                     });
-                } else {
-                    // `load_path` reports "Configuration loaded."; preserve the
-                    // refresh confirmation that triggered the load.
-                    let loaded = self.status.clone();
-                    let warning = self.status_warning;
-                    refresh_has_warning = warning;
-                    let combined = if loaded.starts_with("Configuration loaded") {
-                        loaded.replacen(
-                            "Configuration loaded",
-                            "Steam accounts refreshed. Configuration loaded",
-                            1,
-                        )
-                    } else {
-                        format!("Steam accounts refreshed. {loaded}")
-                    };
-                    self.set_background_status(&combined, warning);
+                    Notice::warning(err.to_string())
                 }
-            } else {
-                self.load_path(None);
-                self.set_background_status(
-                    "This account does not have a CS2 video configuration.",
-                    true,
-                );
-            }
+            },
+        };
+        // An operation result describes the file it ran on. It stays through
+        // a refresh of that file unless the refresh found a problem.
+        if notice.warning || self.editor.path() != prior_path.as_deref() {
+            self.status.report(notice);
         } else {
-            self.load_path(None);
-        }
-        // A new reload error or preference warning takes precedence over an
-        // earlier operation result, even when the old snapshot remains loaded.
-        if self.editor.path() == prior_path.as_deref() && !refresh_has_warning {
-            if let Some((message, warning)) = prior_operation {
-                self.set_operation_status(&message, warning);
-            }
+            self.status.report_background(notice);
         }
     }
 
-    /// Opens `path` for editing, or forgets the current file for `None`, and
-    /// remembers the selection. A failed load keeps the current file.
-    pub(super) fn load_path(&mut self, path: Option<PathBuf>) -> bool {
-        let Some(path) = path else {
-            self.editor.clear();
-            self.pending_changed();
-            return true;
-        };
-        if let Err(err) = self.editor.load(path.clone()) {
-            self.set_status(&err.to_string(), true);
-            return false;
-        }
-        let account_id = self
+    /// Opens `path` for editing and remembers the selection. A failed load
+    /// keeps the current file. Reports nothing; callers choose the notice.
+    fn open_path(&mut self, path: PathBuf) -> Result<(), CoreError> {
+        self.editor.load(path.clone())?;
+        self.preferences.last_account_id = self
             .selected_account
             .and_then(|i| self.accounts.get(i))
             .map(|a| a.account_id.clone())
-            .unwrap_or_default();
-        let recent = self.preferences_service().add_recent(
+            .filter(|id| !id.is_empty());
+        self.preferences.last_config_path = Some(path.to_string_lossy().to_string());
+        self.preferences.recent_config_paths = self.preferences_service().add_recent(
             &self.preferences.recent_config_paths,
             &path.to_string_lossy(),
         );
-        self.preferences = self.preferences_service().save_selection_with_theme(
-            Some(&account_id),
-            Some(&path),
-            &recent,
-            self.preferences.theme,
-            self.settings_path_opt(),
-        );
-        if let Some(warning) = self.preferences.warning.clone() {
-            // A save failure supersedes the startup read warning.
-            self.load_warning = None;
-            self.set_status(&format!("Configuration loaded. {warning}"), true);
-        } else if let Some(read_warning) = self.load_warning.clone() {
-            // Surface the startup read warning once instead of
-            // silently discarding it via the successful save.
-            self.load_warning = None;
-            self.set_status(&format!("Configuration loaded. {read_warning}"), true);
-        } else {
-            self.set_status("Configuration loaded.", false);
-        }
+        self.save_preferences();
         self.pending_changed();
-        true
+        Ok(())
     }
 
-    /// Refreshes the status hint after the pending edit changed.
+    fn close_file(&mut self) {
+        self.editor.clear();
+        self.pending_changed();
+    }
+
+    /// Opens `path` and reports the result, or closes the file for `None`.
+    /// Returns whether the requested file is now loaded.
+    pub(super) fn load_path(&mut self, path: Option<PathBuf>) -> bool {
+        let Some(path) = path else {
+            self.close_file();
+            return true;
+        };
+        match self.open_path(path) {
+            Ok(()) => {
+                self.status.report(Notice::info("Configuration loaded."));
+                true
+            }
+            Err(err) => {
+                self.status.report(Notice::warning(err.to_string()));
+                false
+            }
+        }
+    }
+
+    /// Refreshes the edit state and its status hint after the pending edit
+    /// changed. Invalid input is reported in the settings card instead.
     pub(super) fn pending_changed(&mut self) {
         self.editor.refresh();
-        // Never clobber a sticky operation warning (apply/restore failure,
-        // external change, preferences warning) with a routine pending-state
-        // refresh; background display changes and keystrokes both funnel
-        // through here. Invalid input is reported in the settings card.
-        if self.operation_status.is_none() && !self.status_warning {
-            match self.editor.edit() {
-                EditState::Changed { .. } => {
-                    self.status = "Review the pending settings, then apply the change.".into();
-                }
-                EditState::Unchanged { .. } => self.status = "No pending changes.".into(),
-                EditState::NoFile | EditState::Invalid => {}
-            }
+        match self.editor.edit() {
+            EditState::Changed { .. } => self.status.hint(Notice::info(
+                "Review the pending settings, then apply the change.",
+            )),
+            EditState::Unchanged { .. } => self.status.hint(Notice::info("No pending changes.")),
+            EditState::NoFile | EditState::Invalid => {}
         }
     }
 
@@ -236,46 +211,35 @@ impl ResEditApp {
     }
 
     pub(super) fn apply(&mut self) {
-        match self.editor.apply() {
+        let notice = match self.editor.apply() {
             Ok(ApplyOutcome::Applied {
                 backup: Some(backup),
-            }) => {
-                let name = backup
+            }) => Notice::info(format!(
+                "Changes applied. Backup: {}",
+                backup
                     .file_name()
                     .unwrap_or(backup.as_os_str())
                     .to_string_lossy()
-                    .to_string();
-                self.set_operation_status(&format!("Changes applied. Backup: {name}"), false);
-            }
-            Ok(ApplyOutcome::Applied { backup: None }) => {
-                self.set_operation_status("Changes applied.", false);
-            }
+            )),
+            Ok(ApplyOutcome::Applied { backup: None }) => Notice::info("Changes applied."),
             Ok(ApplyOutcome::AlreadyCurrent) => {
-                self.set_operation_status("The configuration already has these settings.", false);
+                Notice::info("The configuration already has these settings.")
             }
-            Err(WriteError::Unavailable) => {}
+            Err(WriteError::Unavailable) => return,
             Err(WriteError::NeedsReload) => {
-                self.set_operation_status(
-                    "Reload the configuration before applying changes.",
-                    true,
-                );
+                Notice::warning("Reload the configuration before applying changes.")
             }
-            Err(WriteError::ExternalChange(message)) => self.set_operation_status(&message, true),
-            Err(WriteError::Failed(err)) => self.set_operation_status(&err.to_string(), true),
-            Err(WriteError::Unverified { written, error }) => {
-                let outcome = if written {
+            Err(WriteError::Unverified { written, error }) => Notice::warning(format!(
+                "{} the updated configuration failed: {error}. Reload the file.",
+                if written {
                     "Changes were written, but verifying"
                 } else {
                     "Verifying"
-                };
-                self.set_operation_status(
-                    &format!(
-                        "{outcome} the updated configuration failed: {error}. Reload the file."
-                    ),
-                    true,
-                );
-            }
-        }
+                }
+            )),
+            Err(err) => write_error_notice(err),
+        };
+        self.status.report_operation(notice);
         self.pending_changed();
     }
 
@@ -283,13 +247,15 @@ impl ResEditApp {
         self.confirm_restore = false;
         self.selected_backup = None;
         if self.editor.path().is_none() {
-            self.set_status("Select a configuration first.", true);
+            self.status
+                .report(Notice::warning("Select a configuration first."));
             return;
         }
         self.backups = match self.editor.backups() {
             Ok(backups) => backups,
             Err(err) => {
-                self.set_status(&format!("Could not load backups: {err}"), true);
+                self.status
+                    .report(Notice::warning(format!("Could not load backups: {err}")));
                 return;
             }
         };
@@ -301,42 +267,29 @@ impl ResEditApp {
             return;
         };
         let backup = PathBuf::from(&backup.path);
-        let result = self.editor.restore(&backup);
-        if !matches!(
-            result,
-            Err(WriteError::Unavailable | WriteError::NeedsReload)
-        ) {
-            self.confirm_restore = false;
-        }
-        match result {
+        let notice = match self.editor.restore(&backup) {
             Ok(()) => {
                 self.show_backups = false;
-                match self.preferences.warning.clone() {
-                    Some(warning) => self.set_operation_status(
-                        &format!("Backup restored successfully. {warning}"),
-                        true,
-                    ),
-                    None => self.set_operation_status("Backup restored successfully.", false),
-                }
+                Notice::info("Backup restored successfully.")
             }
-            Err(WriteError::Unavailable) => {}
+            Err(WriteError::Unavailable) => return,
             Err(WriteError::NeedsReload) => {
-                self.set_operation_status(
-                    "Reload the configuration before restoring a backup.",
-                    true,
-                );
+                Notice::warning("Reload the configuration before restoring a backup.")
             }
-            Err(WriteError::ExternalChange(message)) => self.set_operation_status(&message, true),
-            Err(WriteError::Failed(err)) => self.set_operation_status(&err.to_string(), true),
             Err(WriteError::Unverified { error, .. }) => {
                 // The restore itself succeeded; close the window like a success.
                 self.show_backups = false;
-                self.set_operation_status(
-                    &format!("Backup restored, but reloading the configuration failed: {error}"),
-                    true,
-                );
+                Notice::warning(format!(
+                    "Backup restored, but reloading the configuration failed: {error}"
+                ))
             }
-        }
+            Err(err) => {
+                self.confirm_restore = false;
+                write_error_notice(err)
+            }
+        };
+        self.confirm_restore &= self.show_backups;
+        self.status.report_operation(notice);
         self.pending_changed();
     }
 
@@ -354,18 +307,13 @@ impl ResEditApp {
         };
         if let Err(err) = self.configs.read(&file) {
             // Surface the real validation failure, not a generic message.
-            self.set_status(&err.to_string(), true);
+            self.status.report(Notice::warning(err.to_string()));
             return;
         }
         self.request_discard(DiscardAction::OpenFile(file));
     }
 
     pub(super) fn open_file(&mut self, file: PathBuf) {
-        let recent = self.preferences_service().add_recent(
-            &self.preferences.recent_config_paths,
-            &file.to_string_lossy(),
-        );
-        self.preferences.recent_config_paths = recent;
         if !self
             .accounts
             .iter()
@@ -444,14 +392,15 @@ impl ResEditApp {
                     .position(|a| fsutil::paths_equal_ci(&a.config_path, &config_path))
                 {
                     Some(index) => self.select_account(index),
-                    None => self.set_status(
+                    None => self.status.report(Notice::warning(
                         "The selected account is no longer listed. Choose it again.",
-                        true,
-                    ),
+                    )),
                 }
             }
             DiscardAction::Reload => {
-                self.load_path(self.editor.path().map(Path::to_path_buf));
+                if let Some(path) = self.editor.path().map(Path::to_path_buf) {
+                    self.load_path(Some(path));
+                }
             }
             DiscardAction::OpenFile(file) => self.open_file(file),
         }
@@ -468,5 +417,17 @@ impl ResEditApp {
 
     pub(super) fn cancel_confirmation(&mut self) {
         self.confirmation = None;
+    }
+}
+
+/// Notice for a failed write that the operation itself does not explain.
+fn write_error_notice(err: WriteError) -> Notice {
+    match err {
+        WriteError::ExternalChange(message) => Notice::warning(message),
+        WriteError::Failed(err) => Notice::warning(err.to_string()),
+        WriteError::Unverified { error, .. } => Notice::warning(error.to_string()),
+        WriteError::Unavailable | WriteError::NeedsReload => {
+            Notice::warning("The configuration is not ready to write. Reload it.")
+        }
     }
 }
