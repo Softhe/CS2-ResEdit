@@ -57,8 +57,8 @@ impl CoreError {
         }
     }
 
-    /// Category name used in privacy-safe diagnostics. Mirrors the C#
-    /// implementation, which reports `ex.GetType().Name`.
+    /// Category name used in privacy-safe diagnostics. The names are part of
+    /// the diagnostics schema, so keep them stable.
     pub fn category(&self) -> &'static str {
         match self {
             Self::InvalidData(_) => "InvalidDataException",

@@ -3,13 +3,14 @@
 //! The layout has a header, a settings card and a
 //! preview card (side by side in the fixed-size window), and a footer
 //! with status text plus Reset / Apply actions.
+//!
+//! `ResEditApp` owns discovery, dialogs, theming, and preferences. The file
+//! being edited lives in `editor::Editor`, which has no UI dependency.
 
 use cs2_resedit_core::{
-    fsutil, CoreError, DiagnosticService, DisplayInfo, DisplayModeProvider, DisplayProvider,
-    Preferences, PreferencesService, Resolution, ResolutionCatalog, SteamAccount, SteamService,
-    UiTheme, UpdateResult, VideoConfigService, VideoConfigSnapshot, VideoConfigState,
+    fsutil, DiagnosticService, DisplayInfo, DisplayModeProvider, DisplayProvider, Preferences,
+    PreferencesService, ResolutionCatalog, SteamAccount, SteamService, UiTheme, VideoConfigService,
 };
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -19,17 +20,24 @@ use crate::theme::ThemePalette;
 
 mod controller;
 mod dialogs;
+mod editor;
 mod panels;
+mod status;
 #[cfg(test)]
 use panels::{preview_rectangle, preview_viewport};
 
-pub(crate) use controller::EditState;
+use editor::{describe_video_state, Availability, EditState, Editor};
+use status::{Notice, StatusLine};
 
 const ASPECT_LABELS: [&str; 3] = ["4:3 / 5:4", "16:9", "16:10"];
 const DISPLAY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SLOW_SCAN_THRESHOLD: Duration = Duration::from_millis(150);
 const SCAN_NOTICE_DURATION: Duration = Duration::from_secs(4);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Quiet period before preference changes are written, so a burst of
+/// selections (wheel scrolling through themes, rapid account switches)
+/// becomes one write.
+const PREFERENCES_SAVE_DELAY: Duration = Duration::from_millis(500);
 /// Passes per frame: one to draw, then corrections while the equal-height
 /// cards settle after content or style changes (see `show_main_cards`).
 const CARD_PASSES: std::num::NonZeroUsize = std::num::NonZeroUsize::new(3).unwrap();
@@ -103,33 +111,11 @@ pub struct ResEditApp {
     selected_account: Option<usize>,
     displays: Vec<DisplayInfo>,
     selected_display: usize,
-    aspect_index: usize,
-    preset_choices: Vec<PresetChoice>,
-    selected_preset: usize,
-    custom_width: String,
-    custom_height: String,
-    supported_modes: HashSet<(i32, i32)>,
 
-    selected_path: Option<PathBuf>,
-    original: Option<cs2_resedit_core::VideoConfigState>,
-    snapshot: Option<VideoConfigSnapshot>,
-    // Cached derived state, refreshed by pending_changed(); the frame loop
-    // never re-parses or re-formats these.
-    edit: EditState,
-    /// Last valid pending resolution, kept so the aspect preview stays stable
-    /// while custom-dimension typing passes through intermediate invalid states.
-    /// Never used for Apply; `edit` alone gates `can_apply()`.
-    preview_fallback: Option<Resolution>,
-    current_label: String,
-    pending_label: String,
-    create_backup: bool,
-    status: String,
-    status_warning: bool,
-    operation_status: Option<(String, bool)>,
-    external_change_notice: Option<String>,
-    validation: String,
-    availability: String,
-    availability_ok: Option<bool>,
+    /// The configuration being edited and its pending values.
+    editor: Editor,
+    /// Footer message and its precedence rules.
+    status: StatusLine,
 
     show_backups: bool,
     backups: Vec<cs2_resedit_core::BackupInfo>,
@@ -139,12 +125,6 @@ pub struct ResEditApp {
     diagnostics_summary: String,
     diagnostics_json: String,
     discovered_root_count: usize,
-    /// Preferences-load warning from startup. `load_path` saves preferences
-    /// on every successful load, and a save result carries `warning: None`
-    /// unless the save itself fails — without this field the original
-    /// corrupt-settings warning would be silently discarded after the first
-    /// save (see `load_path`).
-    load_warning: Option<String>,
     display_labels: Vec<String>,
     initialized: bool,
     theme_applied: bool,
@@ -158,6 +138,8 @@ pub struct ResEditApp {
     retired_display_scans: Vec<mpsc::Receiver<Vec<DisplayInfo>>>,
     /// Shared card height from the previous pass (see `show_main_cards`).
     card_height: f32,
+    /// When unsaved preference changes are due to be written.
+    preferences_save_due: Option<Instant>,
     /// Prompt waiting for the user before a destructive or risky action.
     confirmation: Option<Confirmation>,
     /// Reports whether CS2 is running (`None` when unknown). Replaced in tests.
@@ -166,12 +148,6 @@ pub struct ResEditApp {
     high_contrast_probe: fn() -> bool,
     /// `CS2_RESEDIT_HIGH_CONTRAST` forces the high-contrast palette.
     high_contrast_forced: bool,
-}
-
-#[derive(Debug, Clone)]
-struct PresetChoice {
-    resolution: Option<Resolution>,
-    label: String,
 }
 
 impl ResEditApp {
@@ -196,30 +172,8 @@ impl ResEditApp {
             selected_account: None,
             displays: Vec::new(),
             selected_display: 0,
-            aspect_index: 0,
-            preset_choices: vec![PresetChoice {
-                resolution: None,
-                label: "Custom resolution".to_string(),
-            }],
-            selected_preset: 0,
-            custom_width: "1280".to_string(),
-            custom_height: "960".to_string(),
-            supported_modes: HashSet::new(),
-            selected_path: None,
-            original: None,
-            snapshot: None,
-            edit: EditState::NoFile,
-            preview_fallback: None,
-            current_label: "—".to_string(),
-            pending_label: "—".to_string(),
-            create_backup: true,
-            status: String::new(),
-            status_warning: false,
-            operation_status: None,
-            external_change_notice: None,
-            validation: String::new(),
-            availability: String::new(),
-            availability_ok: None,
+            editor: Editor::new(VideoConfigService),
+            status: StatusLine::default(),
             show_backups: false,
             backups: Vec::new(),
             selected_backup: None,
@@ -228,7 +182,6 @@ impl ResEditApp {
             diagnostics_summary: String::new(),
             diagnostics_json: String::new(),
             discovered_root_count: 0,
-            load_warning: None,
             display_labels: Vec::new(),
             initialized: false,
             theme_applied: false,
@@ -241,6 +194,7 @@ impl ResEditApp {
             retired_account_scans: Vec::new(),
             retired_display_scans: Vec::new(),
             card_height: 0.0,
+            preferences_save_due: None,
             confirmation: None,
             game_probe: crate::system::game_running,
             high_contrast_probe: crate::system::high_contrast_enabled,
@@ -263,19 +217,10 @@ impl ResEditApp {
             self.palette = ThemePalette::for_theme(self.preferences.theme);
             self.theme_applied = false;
         }
-        // Keep the read-time warning aside: `load_path` saves preferences on
-        // every successful load and would otherwise clobber it with a fresh
-        // `warning: None` result.
-        self.load_warning = self.preferences.warning.clone();
-        if let Some(warning) = self.load_warning.clone() {
-            self.set_status(&warning, true);
+        if let Some(warning) = self.preferences.warning.take() {
+            self.status.preferences_read_failed(warning);
         }
         self.refresh_displays();
-        self.aspect_index = 0;
-        let initial = ResolutionCatalog::recommended_preset(0).expect("mode 0 preset");
-        self.populate_preset_choices(0, Some(initial.width), Some(initial.height));
-        self.custom_width = initial.width.to_string();
-        self.custom_height = initial.height.to_string();
         self.refresh_accounts();
         self.initialized = true;
     }
@@ -347,8 +292,6 @@ impl ResEditApp {
         self.display_changed();
     }
 
-    /// Polls the OS for topology changes, mirroring the C# app's
-    /// WM_DISPLAYCHANGE handling; adopts the new list only on change.
     /// Polls the OS for display-topology and High Contrast changes. Runs
     /// only while the window has focus: nothing can be selected in the
     /// background, and focusing the window triggers a fresh poll.
@@ -361,7 +304,7 @@ impl ResEditApp {
         self.refresh_displays();
     }
 
-    /// Follows Windows High Contrast at runtime, like the C# build did.
+    /// Follows Windows High Contrast while the app runs.
     fn refresh_high_contrast(&mut self) {
         let enabled = self.high_contrast_forced || (self.high_contrast_probe)();
         if enabled == self.palette.high_contrast {
@@ -384,12 +327,13 @@ impl ResEditApp {
                     self.adopt_accounts(root_count, accounts);
                     self.note_scan("Steam account scan", elapsed);
                     if !warnings.is_empty() {
-                        self.set_background_status("Steam accounts were found, but account names could not be read from one or more Steam installations.", true);
+                        self.status.report_background(Notice::warning("Steam accounts were found, but account names could not be read from one or more Steam installations."));
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.account_scan = None;
-                    self.set_background_status("Steam account scan failed.", true);
+                    self.status
+                        .report_background(Notice::warning("Steam account scan failed."));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -406,7 +350,8 @@ impl ResEditApp {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.display_scan = None;
-                    self.set_background_status("Display scan failed.", true);
+                    self.status
+                        .report_background(Notice::warning("Display scan failed."));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -414,16 +359,17 @@ impl ResEditApp {
         if let Some(scan) = &mut self.account_scan {
             if !scan.timeout_reported && scan.started.elapsed() >= SCAN_TIMEOUT {
                 scan.timeout_reported = true;
-                self.set_background_status(
+                self.status.report_background(Notice::warning(
                     "Steam account scan is taking longer than expected.",
-                    true,
-                );
+                ));
             }
         }
         if let Some(scan) = &mut self.display_scan {
             if !scan.timeout_reported && scan.started.elapsed() >= SCAN_TIMEOUT {
                 scan.timeout_reported = true;
-                self.set_background_status("Display scan is taking longer than expected.", true);
+                self.status.report_background(Notice::warning(
+                    "Display scan is taking longer than expected.",
+                ));
             }
         }
         if self
@@ -495,7 +441,7 @@ impl ResEditApp {
             &self.displays,
             self.discovered_root_count,
             self.accounts.len(),
-            self.selected_path.as_deref(),
+            self.editor.path(),
             self.palette.high_contrast,
         );
         self.diagnostics_summary = DiagnosticService::to_summary(&report);
@@ -503,21 +449,44 @@ impl ResEditApp {
         self.show_diagnostics = true;
     }
 
-    fn set_status(&mut self, message: &str, warning: bool) {
-        self.operation_status = None;
-        self.status = message.to_string();
-        self.status_warning = warning;
+    /// Schedules writing the in-memory preferences. Saving also validates
+    /// every recent file, so it stays off the path of each selection.
+    fn save_preferences(&mut self) {
+        self.preferences_save_due = Some(Instant::now() + PREFERENCES_SAVE_DELAY);
     }
 
-    fn set_operation_status(&mut self, message: &str, warning: bool) {
-        self.set_status(message, warning);
-        self.operation_status = Some((message.to_string(), warning));
-    }
-
-    fn set_background_status(&mut self, message: &str, warning: bool) {
-        if self.operation_status.is_none() {
-            self.set_status(message, warning);
+    /// Writes preferences once their quiet period has passed, and otherwise
+    /// wakes the UI when it will have.
+    fn save_due_preferences(&mut self, ctx: &egui::Context) {
+        let Some(due) = self.preferences_save_due else {
+            return;
+        };
+        let now = Instant::now();
+        if now >= due {
+            self.flush_preferences();
+        } else {
+            ctx.request_repaint_after(due - now);
         }
+    }
+
+    /// Writes pending preference changes now and records whether that worked.
+    fn flush_preferences(&mut self) {
+        if self.preferences_save_due.take().is_none() {
+            return;
+        }
+        let saved = self.preferences_service().save_selection_with_theme(
+            self.preferences.last_account_id.as_deref(),
+            self.preferences.last_config_path.as_deref().map(Path::new),
+            &self.preferences.recent_config_paths,
+            self.preferences.theme,
+            self.settings_path_opt(),
+        );
+        self.status
+            .preferences_saved(saved.warning.clone().map_or(Ok(()), Err));
+        self.preferences = Preferences {
+            warning: None,
+            ..saved
+        };
     }
 
     /// Draws the settings and preview cards side by side at equal height in
@@ -569,13 +538,16 @@ impl eframe::App for ResEditApp {
             if let Some(icon) = self.palette.window_icon() {
                 #[cfg(windows)]
                 if let Err(error) = self.taskbar_icon.update(_frame, &icon) {
-                    self.set_status(&format!("Taskbar icon could not be updated: {error}"), true);
+                    self.status.report(Notice::warning(format!(
+                        "Taskbar icon could not be updated: {error}"
+                    )));
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(icon)));
             }
             self.theme_applied = true;
         }
         self.poll_scans();
+        self.save_due_preferences(ctx);
         let focused = ctx.input(|i| i.focused);
         if focused {
             self.poll_system();
@@ -622,7 +594,14 @@ impl eframe::App for ResEditApp {
         self.diagnostics_window(ctx);
         self.confirmation_prompt(ctx);
     }
+
+    /// Writes preference changes that were still waiting for their quiet
+    /// period when the window closed.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.flush_preferences();
+    }
 }
+
 fn export_diagnostics(path: &Path, json: &str) -> std::io::Result<()> {
     cs2_resedit_core::fsutil::atomic_write(path, json.as_bytes())
 }
@@ -659,36 +638,10 @@ fn fixed_column_rects(bounds: egui::Rect, gap: f32, right_gutter: f32) -> (egui:
     (left, right)
 }
 
-fn describe_external_change(
-    loaded: VideoConfigState,
-    current: Result<VideoConfigState, CoreError>,
-) -> String {
-    let loaded_label = describe_video_state(loaded);
-    match current {
-        Ok(current) if current == loaded => format!(
-            "Loaded: {loaded_label}. On disk: display settings are the same; other file content changed. Reload before applying or restoring."
-        ),
-        Ok(current) => format!(
-            "Loaded: {loaded_label}. On disk: {}. Reload before applying or restoring.",
-            describe_video_state(current)
-        ),
-        Err(CoreError::Io(_)) => format!(
-            "Loaded: {loaded_label}. The file on disk could not be read. Resolve the file access issue and reload."
-        ),
-        Err(_) => format!(
-            "Loaded: {loaded_label}. The file on disk no longer has valid display settings. Resolve the file and reload."
-        ),
-    }
-}
-
-fn describe_video_state(state: VideoConfigState) -> String {
-    let aspect = ResolutionCatalog::mode_name(state.aspect_mode, state.width, state.height)
-        .unwrap_or("unknown aspect");
-    format!("{} × {} ({aspect})", state.width, state.height)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cs2_resedit_core::VideoConfigState;
 
     #[test]
     fn account_refresh_surfaces_new_load_errors_and_preference_warnings() {
@@ -699,11 +652,12 @@ mod tests {
             std::fs::write(&config, "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n").unwrap();
             let mut app = ResEditApp::new(Some(settings.clone()), None, None);
             assert!(app.load_path(Some(config.clone())));
-            app.custom_width = "1280".into();
+            app.flush_preferences();
+            app.editor.custom_width = "1280".into();
             app.pending_changed();
             app.apply();
-            assert!(app.status.starts_with("Changes applied."));
-            assert!(!app.has_pending_changes());
+            assert!(app.status.text().starts_with("Changes applied."));
+            assert!(!app.editor.has_pending_changes());
             if preference_failure {
                 std::fs::remove_file(&settings).unwrap();
                 std::fs::create_dir(&settings).unwrap();
@@ -711,17 +665,27 @@ mod tests {
                 std::fs::write(&config, "invalid configuration").unwrap();
             }
             app.adopt_accounts(0, vec![custom_account(&config)]);
-            assert!(app.status_warning, "new warning hidden: {}", app.status);
-            assert!(!app.status.starts_with("Changes applied."));
-            assert!(app.operation_status.is_none());
-            assert_eq!(app.selected_path.as_ref(), Some(&config));
-            assert_eq!(app.original.unwrap().width, 1280);
+            app.flush_preferences();
+            assert_eq!(app.editor.path(), Some(config.as_path()));
+            assert_eq!(app.editor.original().unwrap().width, 1280);
             if preference_failure {
-                assert!(app.status.contains("Preferences could not be saved"));
+                // The settings warning has its own slot; the apply result
+                // for the unchanged file stays visible beside it.
+                let warning = app.status.preferences_warning().expect("warning");
+                assert!(warning.contains("Preferences could not be saved"));
+                assert!(app.status.text().starts_with("Changes applied."));
+            } else {
+                // A reload error replaces the earlier operation result.
+                assert!(
+                    app.status.is_warning(),
+                    "warning hidden: {}",
+                    app.status.text()
+                );
+                assert!(!app.status.has_operation());
             }
-            let warning = app.status.clone();
+            let shown = app.status.text().to_string();
             app.pending_changed();
-            assert_eq!(app.status, warning);
+            assert_eq!(app.status.text(), shown);
         }
     }
 
@@ -732,30 +696,33 @@ mod tests {
         std::fs::write(&config, "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n").unwrap();
         let mut app = ResEditApp::new(Some(dir.path().join("settings.json")), None, None);
         app.load_path(Some(config.clone()));
-        app.custom_width = "1280".into();
+        app.editor.custom_width = "1280".into();
         app.pending_changed();
         app.apply();
-        assert!(app.status.starts_with("Changes applied."));
-        let applied = app.status.clone();
-        app.custom_width = "1600".into();
+        assert!(app.status.text().starts_with("Changes applied."));
+        let applied = app.status.text().to_string();
+        app.editor.custom_width = "1600".into();
         app.pending_changed();
         app.display_changed();
         app.adopt_accounts(0, vec![custom_account(&config)]);
-        assert_eq!(app.status, applied);
+        assert_eq!(app.status.text(), applied);
         app.open_backups();
         app.selected_backup = Some(0);
         app.restore_selected_backup();
-        assert!(app.status.starts_with("Backup restored successfully."));
-        let restored = app.status.clone();
-        app.custom_width = "1600".into();
+        assert!(app
+            .status
+            .text()
+            .starts_with("Backup restored successfully."));
+        let restored = app.status.text().to_string();
+        app.editor.custom_width = "1600".into();
         app.pending_changed();
         app.adopt_displays(Vec::new());
         app.adopt_accounts(0, vec![custom_account(&config)]);
-        assert_eq!(app.status, restored);
+        assert_eq!(app.status.text(), restored);
         std::fs::write(&config, "external edit").unwrap();
         app.apply();
-        assert!(app.status_warning);
-        let failure = app.status.clone();
+        assert!(app.status.is_warning());
+        let failure = app.status.text().to_string();
         let (sender, receiver) = mpsc::channel();
         app.account_scan = Some(PendingScan {
             receiver,
@@ -770,8 +737,8 @@ mod tests {
             ))
             .unwrap();
         app.poll_scans();
-        assert_eq!(app.status, failure);
-        assert!(app.has_pending_changes());
+        assert_eq!(app.status.text(), failure);
+        assert!(app.editor.has_pending_changes());
     }
 
     #[test]
@@ -835,14 +802,12 @@ mod tests {
         )));
         app.accounts[0].display_name = "A very long Steam account name ".repeat(12);
         app.selected_account = Some(0);
-        app.selected_path = Some(std::path::PathBuf::from("C:/very/long/".repeat(30)));
-        app.current_label = "Current: 1440 × 1080 · 4:3".to_owned();
-        app.availability = "Reported for selected display".to_owned();
-        app.original = Some(VideoConfigState::new(1280, 960, 0));
-        app.edit = EditState::Unchanged {
-            resolution: Resolution::new(1280, 960, "4:3", 0),
-        };
-        app.populate_preset_choices(0, Some(1280), Some(960));
+        app.editor
+            .set_path(std::path::PathBuf::from("C:/very/long/".repeat(30)));
+        app.editor
+            .set_loaded_state(VideoConfigState::new(1280, 960, 0));
+        app.editor.reset_pending();
+        assert!(matches!(app.editor.edit(), EditState::Unchanged { .. }));
 
         for theme in UiTheme::ALL {
             app.palette = ThemePalette::for_theme(theme);
@@ -854,7 +819,7 @@ mod tests {
                 (829.0, 544.0, "Pending: 1440 × 1080 · 4:3 ".repeat(8)),
             ] {
                 app.palette.apply(&context, width < 900.0);
-                app.pending_label = pending_label;
+                app.editor.set_pending_label(pending_label);
                 let mut cards = None;
                 let _ = context.run(
                     egui::RawInput {
@@ -938,75 +903,6 @@ mod tests {
     }
 
     #[test]
-    fn aspect_selection_filters_preset_catalog() {
-        let mut app = ResEditApp::new(None, None, None);
-        app.supported_modes.clear();
-        for (mode, expected_first, expected_ratio) in [
-            (0, "1280x960", "(4:3)"),
-            (1, "1920x1080", "(16:9)"),
-            (2, "1680x1050", "(16:10)"),
-        ] {
-            app.on_aspect_selected(mode as usize);
-            let catalog_count = ResolutionCatalog::presets()
-                .iter()
-                .filter(|p| p.mode == mode)
-                .count();
-            assert_eq!(app.preset_choices.len(), catalog_count + 1);
-            for choice in app.preset_choices.iter().skip(1) {
-                assert!(
-                    choice.label.contains(expected_ratio)
-                        || (mode == 0
-                            && (choice.label.contains("(4:3)") || choice.label.contains("(5:4)"))),
-                    "unexpected label {}",
-                    choice.label
-                );
-            }
-            assert!(app.preset_choices[app.selected_preset]
-                .label
-                .starts_with(expected_first));
-            assert_eq!(app.custom_width, expected_first.split('x').next().unwrap());
-        }
-    }
-
-    #[test]
-    fn supported_display_modes_are_listed_before_catalog_only_modes() {
-        let mut app = ResEditApp::new(None, None, None);
-        app.supported_modes = [(1280, 720), (1360, 768), (1920, 1080)]
-            .into_iter()
-            .collect();
-        app.on_aspect_selected(1);
-        let labels: Vec<_> = app.preset_choices.iter().map(|c| c.label.clone()).collect();
-        assert!(labels[1].contains("available"));
-        assert!(labels[2].contains("available"));
-        assert!(labels
-            .iter()
-            .any(|l| l.starts_with("1360x768") && l.contains("available")));
-        assert!(labels.iter().any(|l| l.contains("not reported")));
-    }
-
-    #[test]
-    fn reset_and_apply_reflect_pending_state() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("cs2_video.txt");
-        std::fs::write(
-            &config,
-            "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
-        )
-        .expect("write config");
-        let mut app = ResEditApp::new(None, None, None);
-        app.supported_modes.clear();
-        app.load_path(Some(config.clone()));
-        assert!(!app.can_apply());
-        assert!(!app.has_pending_changes());
-        app.custom_width = "1280".to_string();
-        app.pending_changed();
-        assert!(app.can_apply());
-        assert!(app.has_pending_changes());
-        app.apply();
-        assert_eq!(app.configs.read(&config).expect("read back").width, 1280);
-    }
-
-    #[test]
     fn restore_keeps_preferences_warning_visible() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("cs2_video.txt");
@@ -1017,8 +913,9 @@ mod tests {
         .expect("write config");
         let mut app = ResEditApp::new(Some(dir.path().to_path_buf()), None, None);
         app.load_path(Some(config.clone()));
-        assert!(app.status_warning);
-        app.custom_width = "1280".to_string();
+        app.flush_preferences();
+        assert!(app.status.preferences_warning().is_some());
+        app.editor.custom_width = "1280".to_string();
         app.pending_changed();
         app.apply();
         app.open_backups();
@@ -1026,43 +923,11 @@ mod tests {
         app.selected_backup = Some(0);
         app.restore_selected_backup();
         assert!(!app.show_backups);
-        assert!(app.status_warning);
-        assert!(app.status.contains("Backup restored successfully."));
-        assert!(app.status.contains("Preferences could not be saved"));
-    }
-
-    #[test]
-    fn apply_requires_reload_after_external_file_change() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("cs2_video.txt");
-        let original = "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n";
-        std::fs::write(&config, original).expect("write config");
-        let mut app = ResEditApp::new(None, None, None);
-        app.load_path(Some(config.clone()));
-        app.custom_width = "1280".to_string();
-        app.pending_changed();
-        let externally_changed = format!("{original}// external edit\n");
-        std::fs::write(&config, &externally_changed).expect("external edit");
-        app.apply();
-        assert!(app.status_warning);
-        assert!(app.status.contains("Reload"));
+        assert_eq!(app.status.text(), "Backup restored successfully.");
         assert!(app
-            .external_change_notice
-            .as_ref()
-            .unwrap()
-            .contains("other file content changed"));
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            externally_changed
-        );
-        assert!(app.configs.get_backups(&config).unwrap().is_empty());
-
-        app.load_path(Some(config.clone()));
-        assert!(app.external_change_notice.is_none());
-        app.custom_width = "1280".to_string();
-        app.pending_changed();
-        app.apply();
-        assert_eq!(app.original.unwrap().width, 1280);
+            .status
+            .preferences_warning()
+            .is_some_and(|warning| warning.contains("Preferences could not be saved")));
     }
 
     #[test]
@@ -1076,35 +941,12 @@ mod tests {
         .unwrap();
         let mut app = ResEditApp::new(None, None, None);
         app.load_path(Some(config.clone()));
-        app.custom_width = "1280".to_string();
+        app.editor.custom_width = "1280".to_string();
         app.pending_changed();
         app.adopt_accounts(0, vec![custom_account(&config)]);
-        assert_eq!(app.custom_width, "1280");
-        assert!(app.has_pending_changes());
-        assert!(app.status.contains("Unsaved changes kept"));
-    }
-
-    #[test]
-    fn failed_load_preserves_current_configuration_and_pending_changes() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let valid = dir.path().join("cs2_video.txt");
-        let invalid = dir.path().join("invalid.txt");
-        std::fs::write(
-            &valid,
-            "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
-        )
-        .unwrap();
-        std::fs::write(&invalid, "not a video configuration").unwrap();
-        let mut app = ResEditApp::new(None, None, None);
-        assert!(app.load_path(Some(valid.clone())));
-        app.custom_width = "1280".to_string();
-        app.pending_changed();
-
-        assert!(!app.load_path(Some(invalid)));
-        assert_eq!(app.selected_path.as_deref(), Some(valid.as_path()));
-        assert_eq!(app.original.unwrap().width, 1920);
-        assert_eq!(app.custom_width, "1280");
-        assert!(app.has_pending_changes());
+        assert_eq!(app.editor.custom_width, "1280");
+        assert!(app.editor.has_pending_changes());
+        assert!(app.status.text().contains("Unsaved changes kept"));
     }
 
     #[test]
@@ -1121,7 +963,7 @@ mod tests {
 
         app.adopt_accounts(1, vec![custom_account(&steam)]);
 
-        assert_eq!(app.selected_path.as_deref(), Some(custom.as_path()));
+        assert_eq!(app.editor.path(), Some(custom.as_path()));
     }
 
     #[test]
@@ -1136,7 +978,7 @@ mod tests {
 
         app.poll_scans();
         assert!(!app.scans_need_fast_poll());
-        assert!(app.status.contains("longer than expected"));
+        assert!(app.status.text().contains("longer than expected"));
 
         sender.send(Vec::new()).unwrap();
         app.poll_scans();
@@ -1191,36 +1033,6 @@ mod tests {
     }
 
     #[test]
-    fn restore_requires_reload_after_external_file_change() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("cs2_video.txt");
-        std::fs::write(
-            &config,
-            "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
-        )
-        .unwrap();
-        let mut app = ResEditApp::new(None, None, None);
-        app.load_path(Some(config.clone()));
-        app.custom_width = "1280".to_string();
-        app.pending_changed();
-        app.apply();
-        app.open_backups();
-        app.selected_backup = Some(0);
-        let changed = std::fs::read_to_string(&config).unwrap().replace(
-            "\"setting.defaultres\" \"1280\"",
-            "\"setting.defaultres\" \"1600\"",
-        );
-        std::fs::write(&config, &changed).unwrap();
-        app.restore_selected_backup();
-        assert!(app.status_warning);
-        assert!(app.status.contains("Reload"));
-        let comparison = app.external_change_notice.as_ref().unwrap();
-        assert!(comparison.contains("Loaded: 1280 × 1080"));
-        assert!(comparison.contains("On disk: 1600 × 1080"));
-        assert_eq!(std::fs::read_to_string(&config).unwrap(), changed);
-    }
-
-    #[test]
     fn display_scan_returns_control_before_provider_finishes() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1252,33 +1064,6 @@ mod tests {
     }
 
     #[test]
-    fn external_change_comparison_distinguishes_display_and_other_edits() {
-        let loaded = VideoConfigState::new(1920, 1080, 1);
-        let changed = VideoConfigState::new(1280, 960, 0);
-        let display_change = describe_external_change(loaded, Ok(changed));
-        assert!(display_change.contains("Loaded: 1920 × 1080"));
-        assert!(display_change.contains("On disk: 1280 × 960"));
-        assert!(display_change.contains("4:3"));
-
-        let other_change = describe_external_change(loaded, Ok(loaded));
-        assert!(other_change.contains("display settings are the same"));
-        assert!(other_change.contains("other file content changed"));
-        assert!(!other_change.contains("On disk: 1280"));
-
-        let unreadable = describe_external_change(
-            loaded,
-            Err(CoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "missing",
-            ))),
-        );
-        assert!(unreadable.contains("could not be read"));
-        let invalid =
-            describe_external_change(loaded, Err(CoreError::InvalidData("invalid".to_string())));
-        assert!(invalid.contains("no longer has valid display settings"));
-    }
-
-    #[test]
     fn startup_preferences_warning_survives_first_load() {
         let dir = tempfile::tempdir().expect("tempdir");
         let settings = dir.path().join("settings.json");
@@ -1291,36 +1076,81 @@ mod tests {
         .unwrap();
         let mut app = ResEditApp::new(Some(settings), None, None);
         app.initialize_data();
-        assert!(app.load_warning.is_some());
-        let warning = app.status.clone();
-        assert!(app.status_warning);
-        // Simulate the auto-select load path from adopt_accounts.
+        let read_warning = |app: &ResEditApp| {
+            app.status
+                .preferences_warning()
+                .is_some_and(|warning| warning.contains("Preferences could not be loaded"))
+        };
+        assert!(read_warning(&app));
+        // Simulate the auto-select load path from adopt_accounts. Its save
+        // succeeds, but the startup read failure stays visible.
         app.selected_account = Some(0);
         app.accounts.push(custom_account(&config));
         app.load_path(Some(config));
-        assert!(app.status_warning);
-        assert!(app.status.contains("Configuration loaded."));
-        assert!(
-            app.status.contains("Preferences could not be loaded")
-                || warning.contains("Preferences could not be loaded"),
-            "read warning lost: {}",
-            app.status
+        assert_eq!(app.status.text(), "Configuration loaded.");
+        assert!(read_warning(&app));
+    }
+
+    #[test]
+    fn preference_saves_wait_for_a_quiet_period() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, config) = loaded_app(dir.path());
+        let settings = dir.path().join("settings.json");
+        let ctx = egui::Context::default();
+        // Loading schedules a save instead of writing on the spot.
+        app.save_due_preferences(&ctx);
+        assert!(!settings.exists());
+        let first_due = app.preferences_save_due.expect("save scheduled");
+        // Further changes push the write back rather than adding writes.
+        app.preferences.theme = UiTheme::Paper;
+        app.save_preferences();
+        assert!(app.preferences_save_due.unwrap() >= first_due);
+
+        app.preferences_save_due = Some(Instant::now() - Duration::from_millis(1));
+        app.save_due_preferences(&ctx);
+        assert!(app.preferences_save_due.is_none());
+        let saved = std::fs::read_to_string(&settings).unwrap();
+        assert!(saved.contains("Paper"), "{saved}");
+        assert!(saved.contains("cs2_video.txt"), "{saved}");
+        assert_eq!(app.editor.path(), Some(config.as_path()));
+    }
+
+    #[test]
+    fn loading_reports_configuration_loaded_after_the_edit_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, config) = loaded_app(dir.path());
+        assert_eq!(app.status.text(), "Configuration loaded.");
+        let other = dir.path().join("other.txt");
+        std::fs::copy(&config, &other).unwrap();
+        app.adopt_accounts(1, vec![custom_account(&other)]);
+        assert_eq!(app.editor.path(), Some(config.as_path()), "keeps the file");
+        assert_eq!(
+            app.status.text(),
+            "Steam accounts refreshed. Configuration loaded."
         );
-        assert!(app.load_warning.is_none());
+
+        let mut fresh = ResEditApp::new(Some(dir.path().join("settings.json")), None, None);
+        fresh.preferences.last_config_path = None;
+        fresh.adopt_accounts(1, vec![custom_account(&other)]);
+        assert_eq!(
+            fresh.status.text(),
+            "Steam accounts refreshed. Configuration loaded."
+        );
     }
 
     #[test]
     fn pending_refresh_preserves_operation_warnings() {
         let mut app = ResEditApp::new(None, None, None);
-        app.original = Some(VideoConfigState::new(1920, 1080, 1));
-        app.aspect_index = 1;
-        app.custom_width = "1920".to_string();
-        app.custom_height = "1080".to_string();
-        app.supported_modes.clear();
-        app.set_status("Apply failed: disk full", true);
+        app.editor
+            .set_loaded_state(VideoConfigState::new(1920, 1080, 1));
+        app.editor.aspect_index = 1;
+        app.editor.custom_width = "1920".to_string();
+        app.editor.custom_height = "1080".to_string();
+        app.status
+            .report(Notice::warning("Apply failed: disk full"));
         app.pending_changed();
-        assert!(app.status_warning);
-        assert_eq!(app.status, "Apply failed: disk full");
+        assert!(app.status.is_warning());
+        assert_eq!(app.status.text(), "Apply failed: disk full");
     }
 
     #[test]
@@ -1334,7 +1164,7 @@ mod tests {
         .unwrap();
         let mut app = ResEditApp::new(None, None, None);
         app.load_path(Some(config.clone()));
-        app.custom_width = "1280".to_string();
+        app.editor.custom_width = "1280".to_string();
         app.pending_changed();
         app.apply();
         app.open_backups();
@@ -1344,94 +1174,31 @@ mod tests {
         std::fs::write(&config, "invalid").unwrap();
         // Refresh snapshot mismatch path: external edit then restore attempt.
         app.restore_selected_backup();
-        assert!(app.status_warning);
+        assert!(app.status.is_warning());
         assert!(!app.confirm_restore);
     }
 
     #[test]
     fn invalid_dimensions_keep_footer_operation_status() {
         let mut app = ResEditApp::new(None, None, None);
-        app.original = Some(VideoConfigState::new(1920, 1080, 1));
-        app.aspect_index = 1;
-        app.custom_width = "1920".to_string();
-        app.custom_height = "1080".to_string();
-        app.supported_modes.clear();
-        app.set_status("Apply failed: disk full", true);
-        app.custom_width = "not-a-number".to_string();
+        app.editor
+            .set_loaded_state(VideoConfigState::new(1920, 1080, 1));
+        app.editor.aspect_index = 1;
+        app.editor.custom_width = "1920".to_string();
+        app.editor.custom_height = "1080".to_string();
+        app.status
+            .report(Notice::warning("Apply failed: disk full"));
+        app.editor.custom_width = "not-a-number".to_string();
         app.pending_changed();
-        assert!(matches!(app.edit, EditState::Invalid));
-        assert!(!app.validation.is_empty());
-        assert!(app.status_warning);
-        assert_eq!(app.status, "Apply failed: disk full");
-        assert!(!app.can_apply());
-        assert_eq!(app.apply_blocker_reason(), Some("Enter valid dimensions"));
-    }
-
-    #[test]
-    fn preview_fallback_survives_invalid_keystrokes() {
-        let mut app = ResEditApp::new(None, None, None);
-        app.original = Some(VideoConfigState::new(1920, 1080, 1));
-        app.aspect_index = 1;
-        app.custom_width = "1280".to_string();
-        app.custom_height = "960".to_string();
-        app.supported_modes.clear();
-        app.pending_changed();
-        assert!(app.edit.resolution().is_some());
-        let fallback = app.preview_fallback.expect("fallback");
-        assert_eq!((fallback.width, fallback.height), (1280, 960));
-        // Intermediate typing state: invalid, but the preview shape persists.
-        app.custom_width = "12".to_string();
-        app.pending_changed();
-        assert!(matches!(app.edit, EditState::Invalid));
-        assert_eq!(app.preview_fallback, Some(fallback));
-        assert!(app.preview_fallback.unwrap().width > 0);
-    }
-
-    #[test]
-    fn apply_blocker_reason_covers_all_disabled_states() {
-        let mut app = ResEditApp::new(None, None, None);
-        assert_eq!(app.apply_blocker_reason(), Some("Select a configuration"));
-        app.original = Some(VideoConfigState::new(1920, 1080, 1));
-        app.aspect_index = 1;
-        app.custom_width = "bogus".to_string();
-        app.custom_height = "1080".to_string();
-        app.supported_modes.clear();
-        app.pending_changed();
-        assert_eq!(app.apply_blocker_reason(), Some("Enter valid dimensions"));
-        app.custom_width = "1920".to_string();
-        app.pending_changed();
-        assert_eq!(app.apply_blocker_reason(), Some("No changes to apply"));
-        app.custom_width = "1280".to_string();
-        app.pending_changed();
-        assert_eq!(app.apply_blocker_reason(), None);
-        assert!(app.can_apply());
-    }
-
-    #[test]
-    fn edit_state_tracks_no_file_invalid_unchanged_changed() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("cs2_video.txt");
-        std::fs::write(
-            &config,
-            "\"setting.defaultres\" \"1920\"\n\"setting.defaultresheight\" \"1080\"\n\"setting.aspectratiomode\" \"1\"\n",
-        )
-        .unwrap();
-        let mut app = ResEditApp::new(None, None, None);
-        assert_eq!(app.edit, EditState::NoFile);
-        assert_eq!(app.apply_blocker_reason(), Some("Select a configuration"));
-        app.supported_modes.clear();
-        app.load_path(Some(config));
-        assert!(matches!(app.edit, EditState::Unchanged { .. }));
-        assert_eq!(app.apply_blocker_reason(), Some("No changes to apply"));
-        app.custom_width = "1280".to_string();
-        app.pending_changed();
-        assert!(matches!(app.edit, EditState::Changed { .. }));
-        assert_eq!(app.apply_blocker_reason(), None);
-        app.custom_width = "bogus".to_string();
-        app.pending_changed();
-        assert_eq!(app.edit, EditState::Invalid);
-        assert_eq!(app.edit.resolution(), None);
-        assert_eq!(app.apply_blocker_reason(), Some("Enter valid dimensions"));
+        assert!(matches!(app.editor.edit(), EditState::Invalid));
+        assert!(!app.editor.validation().is_empty());
+        assert!(app.status.is_warning());
+        assert_eq!(app.status.text(), "Apply failed: disk full");
+        assert!(!app.editor.can_apply());
+        assert_eq!(
+            app.editor.apply_blocker_reason(),
+            Some("Enter valid dimensions")
+        );
     }
 
     /// Guards UI strings against tofu: every non-ASCII glyph in the UI sources
@@ -1456,6 +1223,90 @@ mod tests {
         assert!(missing.is_empty(), "uncovered UI glyphs: {missing:?}");
     }
 
+    #[test]
+    fn footer_actions_stay_visible_with_long_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = loaded_app(dir.path());
+        app.editor.custom_width = "1280".into();
+        app.pending_changed();
+        app.status.report(Notice::warning(
+            "The configuration changed outside CS2 ResEdit. Reload it before applying changes. "
+                .repeat(3),
+        ));
+        app.status.preferences_saved(Err(
+            "Preferences could not be saved: access to the settings folder was denied. ".repeat(2),
+        ));
+        // Clicking Apply while CS2 "runs" only opens the prompt, so the test
+        // can prove the click landed without writing the file.
+        app.game_probe = || Some(true);
+
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let (width, height) = (829.0, 544.0);
+        let render = |app: &mut ResEditApp, events: Vec<egui::Event>| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, height),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.footer_panel(ctx, false);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        app.show_main_cards(ui);
+                    });
+                },
+            )
+        };
+        let mut buttons = std::collections::HashMap::new();
+        for _ in 0..3 {
+            let output = render(&mut app, vec![]);
+            for (_, node) in output.platform_output.accesskit_update.unwrap().nodes {
+                if let (Some(label), Some(bounds)) = (node.label(), node.bounds()) {
+                    if label == "Apply changes" || label == "Reset" {
+                        buttons.insert(label.to_string(), bounds);
+                    }
+                }
+            }
+        }
+        for name in ["Apply changes", "Reset"] {
+            let rect = buttons
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} missing"));
+            assert!(
+                rect.x0 >= 0.0 && rect.x1 <= f64::from(width) && rect.y1 <= f64::from(height),
+                "{name} outside the window: {rect:?}"
+            );
+            assert!(rect.x1 - rect.x0 > 20.0, "{name} squeezed: {rect:?}");
+        }
+        let apply = buttons["Apply changes"];
+        let pos = egui::pos2(
+            ((apply.x0 + apply.x1) / 2.0) as f32,
+            ((apply.y0 + apply.y1) / 2.0) as f32,
+        );
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert_eq!(
+            app.confirmation,
+            Some(Confirmation::GameRunning(GuardedWrite::Apply))
+        );
+    }
+
     fn loaded_app(dir: &Path) -> (ResEditApp, PathBuf) {
         let config = dir.join("cs2_video.txt");
         std::fs::write(
@@ -1474,7 +1325,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, config) = loaded_app(dir.path());
         let original = std::fs::read(&config).unwrap();
-        app.custom_width = "1280".into();
+        app.editor.custom_width = "1280".into();
         app.pending_changed();
 
         app.game_probe = || Some(true);
@@ -1485,11 +1336,11 @@ mod tests {
         );
         assert_eq!(std::fs::read(&config).unwrap(), original);
         app.cancel_confirmation();
-        assert!(app.can_apply(), "cancel keeps the pending edit");
+        assert!(app.editor.can_apply(), "cancel keeps the pending edit");
 
         app.request_apply();
         app.confirm();
-        assert!(app.status.starts_with("Changes applied."));
+        assert!(app.status.text().starts_with("Changes applied."));
         assert!(app.confirmation.is_none());
 
         app.open_backups();
@@ -1500,15 +1351,18 @@ mod tests {
             Some(Confirmation::GameRunning(GuardedWrite::Restore))
         );
         app.confirm();
-        assert!(app.status.starts_with("Backup restored successfully."));
+        assert!(app
+            .status
+            .text()
+            .starts_with("Backup restored successfully."));
 
         // An unreadable process list does not block the write.
         app.game_probe = || None;
-        app.custom_width = "1600".into();
+        app.editor.custom_width = "1600".into();
         app.pending_changed();
         app.request_apply();
         assert!(app.confirmation.is_none());
-        assert!(app.status.starts_with("Changes applied."));
+        assert!(app.status.text().starts_with("Changes applied."));
     }
 
     #[test]
@@ -1525,14 +1379,14 @@ mod tests {
         // Without pending edits, actions run immediately.
         app.request_discard(DiscardAction::SelectAccount(1));
         assert!(app.confirmation.is_none());
-        assert_eq!(app.selected_path.as_ref(), Some(&other));
+        assert_eq!(app.editor.path(), Some(other.as_path()));
 
-        app.custom_width = "1280".into();
+        app.editor.custom_width = "1280".into();
         app.pending_changed();
         // Re-selecting the active entry neither prompts nor reloads.
         app.request_discard(DiscardAction::SelectAccount(1));
         assert!(app.confirmation.is_none());
-        assert!(app.has_pending_changes());
+        assert!(app.editor.has_pending_changes());
 
         let config_entry = config.to_string_lossy().to_string();
         for (action, queued) in [
@@ -1549,8 +1403,8 @@ mod tests {
             app.request_discard(action);
             assert_eq!(app.confirmation, Some(Confirmation::DiscardEdits(queued)));
             app.cancel_confirmation();
-            assert!(app.has_pending_changes(), "cancel keeps the edit");
-            assert_eq!(app.selected_path.as_ref(), Some(&other));
+            assert!(app.editor.has_pending_changes(), "cancel keeps the edit");
+            assert_eq!(app.editor.path(), Some(other.as_path()));
         }
 
         // A scan that reorders the list while the prompt is open must not
@@ -1559,20 +1413,24 @@ mod tests {
         app.accounts.reverse();
         app.selected_account = Some(0);
         app.confirm();
-        assert_eq!(app.selected_path.as_ref(), Some(&config));
+        assert_eq!(app.editor.path(), Some(config.as_path()));
         assert_eq!(app.selected_account, Some(1));
-        assert!(!app.has_pending_changes());
+        assert!(!app.editor.has_pending_changes());
 
         // A queued account that disappeared is reported, and edits survive.
-        app.custom_width = "1280".into();
+        app.editor.custom_width = "1280".into();
         app.pending_changed();
         app.request_discard(DiscardAction::SelectAccount(0));
         app.accounts.remove(0);
         app.selected_account = Some(0);
         app.confirm();
-        assert_eq!(app.selected_path.as_ref(), Some(&config));
-        assert!(app.has_pending_changes());
-        assert!(app.status.contains("no longer listed"), "{}", app.status);
+        assert_eq!(app.editor.path(), Some(config.as_path()));
+        assert!(app.editor.has_pending_changes());
+        assert!(
+            app.status.text().contains("no longer listed"),
+            "{}",
+            app.status.text()
+        );
     }
 
     #[test]
@@ -1622,19 +1480,5 @@ mod tests {
         assert!(!app.can_refresh_accounts());
         app.account_scan.as_mut().unwrap().timeout_reported = true;
         assert!(app.can_refresh_accounts());
-    }
-
-    #[test]
-    fn portrait_display_modes_are_not_offered_as_presets() {
-        let mut app = ResEditApp::new(None, None, None);
-        app.supported_modes = [(1080, 1920), (1920, 1080), (1200, 1600)].into();
-        for mode in 0..3 {
-            app.populate_preset_choices(mode, None, None);
-            assert!(app
-                .preset_choices
-                .iter()
-                .filter_map(|choice| choice.resolution)
-                .all(|r| r.width >= r.height));
-        }
     }
 }

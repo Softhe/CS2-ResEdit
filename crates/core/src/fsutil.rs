@@ -1,8 +1,7 @@
 //! Shared atomic file replacement and path helpers.
 //!
-//! Mirrors the .NET `File.Replace` / `File.Move` behavior used by the C#
-//! implementation: the replacement is performed atomically by the OS where
-//! supported, reducing the chance of a missing or truncated target after a crash.
+//! Replacement is performed atomically by the OS where supported, reducing
+//! the chance of a missing or truncated target after a crash.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -253,8 +252,8 @@ fn replace_or_move(temporary: &Path, path: &Path) -> io::Result<()> {
 }
 
 /// Converts forward slashes to the native separator on Windows so paths
-/// coming from Steam's registry behave like the C# build's GetFullPath
-/// output; a no-op elsewhere.
+/// coming from Steam's registry compare and display like native paths; a
+/// no-op elsewhere.
 pub fn to_native(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {

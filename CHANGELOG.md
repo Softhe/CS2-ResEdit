@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 - 2026-10-20
 
+- Startup failures are shown in an error dialog. The release build has no console, so a failed window creation or single-instance check previously made the app silently not appear.
+- When OpenGL cannot open the window, the editor retries with Direct3D 12. `CS2_RESEDIT_RENDERER=opengl` or `d3d12` pins one renderer. The fallback adds about 2.5 MB to the executable.
+- Preference changes are saved after a short quiet period and when the window closes, instead of on every account switch and theme change.
+- The account selector no longer changes on mouse-wheel input, so scrolling past it cannot open another configuration.
+- Preference read and save problems appear in their own footer warning, next to apply and restore results instead of replacing them.
+- Moved file editing state into a UI-independent `Editor` model and footer messages into a typed `StatusLine`. Editing tests now run without constructing the UI.
+- Moved the dated September reviews to `docs/history`, renamed the core test suite to `core_api.rs`, and replaced comments that referred to the removed C# implementation.
 - The equal-height cards render in a single pass that re-runs only when their shared height changes, replacing the invisible sizing pass that drew every card twice per frame.
 - Moved the header, footer, and dialogs out of the frame loop so the whole UI is rustfmt-formatted, and split the backups window into smaller helpers.
 - Display enumeration and file replacement use `windows-sys` bindings instead of hand-written structs and `extern` blocks.

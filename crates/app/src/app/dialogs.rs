@@ -60,35 +60,26 @@ impl ResEditApp {
                     if previous != self.preferences.theme {
                         self.palette = ThemePalette::for_theme(self.preferences.theme);
                         self.theme_applied = false;
-                        self.preferences = self.preferences_service().save_selection_with_theme(
-                            self.preferences.last_account_id.as_deref(),
-                            self.preferences.last_config_path.as_deref().map(Path::new),
-                            &self.preferences.recent_config_paths,
-                            self.preferences.theme,
-                            self.settings_path_opt(),
-                        );
-                        if let Some(warning) = self.preferences.warning.clone() {
-                            self.set_status(&warning, true);
-                        }
+                        self.save_preferences();
                         ctx.request_repaint();
                     }
                     // Header badge doubles as sync state: file name plus
                     // unsaved/synced marker instead of a static label.
-                    let (badge, badge_color) = match &self.selected_path {
+                    let (badge, badge_color) = match self.editor.path() {
                         None => ("No configuration".to_string(), palette.muted),
                         Some(path) => {
                             let name = path
                                 .file_name()
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or_else(|| "cs2_video.txt".to_string());
-                            let marker = if self.has_pending_changes() {
+                            let marker = if self.editor.has_pending_changes() {
                                 "• "
                             } else {
                                 ""
                             };
                             (
                                 format!("{marker}{name}"),
-                                if self.has_pending_changes() {
+                                if self.editor.has_pending_changes() {
                                     palette.accent
                                 } else {
                                     palette.muted
@@ -97,7 +88,7 @@ impl ResEditApp {
                         }
                     };
                     ui.label(egui::RichText::new(badge).color(badge_color).strong())
-                        .on_hover_text(match &self.selected_path {
+                        .on_hover_text(match self.editor.path() {
                             None => "Select an account or browse to a config file".to_string(),
                             Some(path) => path.to_string_lossy().to_string(),
                         });
@@ -111,56 +102,65 @@ impl ResEditApp {
         let palette = self.palette;
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.add_enabled_ui(!modal_open, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(activity) = self.scan_activity() {
-                        ui.spinner();
-                        ui.label(activity);
-                    } else if let Some((notice, _)) = &self.scan_notice {
-                        ui.label(notice);
+                // The actions are laid out first, from the right edge, so
+                // long messages wrap in the remaining width instead of pushing
+                // Apply and Reset out of the window.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let apply =
+                        ui.add_enabled(self.editor.can_apply(), egui::Button::new("Apply changes"));
+                    if apply.clicked() {
+                        self.request_apply();
                     }
-                    if self.status_warning {
-                        egui::Frame::new()
-                            .fill(palette.accent_soft)
-                            .corner_radius(egui::CornerRadius::same(6))
-                            .inner_margin(8.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("⚠ {}", self.status))
-                                        .color(palette.warning),
+                    if let Some(reason) = self.editor.apply_blocker_reason() {
+                        apply.on_disabled_hover_text(reason);
+                    }
+                    let reset = ui.add_enabled(
+                        self.editor.has_pending_changes(),
+                        egui::Button::new("Reset"),
+                    );
+                    if reset.clicked() {
+                        self.reset_pending();
+                    }
+                    if !reset.enabled() {
+                        reset.on_disabled_hover_text(if self.editor.original().is_none() {
+                            "Nothing to reset yet"
+                        } else {
+                            "No pending changes to discard"
+                        });
+                    }
+                    // Always-visible reason for a disabled Apply; hover
+                    // tooltips alone exclude touch and keyboard users.
+                    if let Some(reason) = self.editor.apply_blocker_reason() {
+                        ui.label(egui::RichText::new(reason).small().color(palette.muted));
+                    }
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        if let Some(activity) = self.scan_activity() {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(activity);
+                            });
+                        } else if let Some((notice, _)) = &self.scan_notice {
+                            ui.label(notice);
+                        }
+                        match self.status.current() {
+                            Some(notice) if notice.warning => {
+                                warning_chip(ui, palette, &notice.text);
+                            }
+                            Some(notice) => {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&notice.text).color(palette.muted),
+                                    )
+                                    .wrap(),
                                 );
-                            });
-                    } else {
-                        ui.label(egui::RichText::new(&self.status).color(palette.muted));
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let apply =
-                            ui.add_enabled(self.can_apply(), egui::Button::new("Apply changes"));
-                        if apply.clicked() {
-                            self.request_apply();
+                            }
+                            None => {}
                         }
-                        if !apply.enabled() {
-                            apply.on_disabled_hover_text(if self.original.is_none() {
-                                "Select a configuration first"
-                            } else {
-                                "Change the resolution or aspect to enable Apply"
-                            });
-                        }
-                        let reset =
-                            ui.add_enabled(self.has_pending_changes(), egui::Button::new("Reset"));
-                        if reset.clicked() {
-                            self.reset_pending();
-                        }
-                        if !reset.enabled() {
-                            reset.on_disabled_hover_text(if self.original.is_none() {
-                                "Nothing to reset yet"
-                            } else {
-                                "No pending changes to discard"
-                            });
-                        }
-                        // Always-visible reason for a disabled Apply; hover
-                        // tooltips alone exclude touch and keyboard users.
-                        if let Some(reason) = self.apply_blocker_reason() {
-                            ui.label(egui::RichText::new(reason).small().color(palette.muted));
+                        // Preference problems sit below the main message so
+                        // an apply result and a settings warning are both
+                        // visible.
+                        if let Some(warning) = self.status.preferences_warning() {
+                            warning_chip(ui, palette, warning);
                         }
                     });
                 });
@@ -180,7 +180,7 @@ impl ResEditApp {
             .default_size([560.0, 420.0])
             .min_size([420.0, 300.0])
             .show(ctx, |ui| {
-                if let Some(comparison) = &self.external_change_notice {
+                if let Some(comparison) = self.editor.external_change() {
                     ui.colored_label(self.palette.warning, comparison);
                     ui.separator();
                 }
@@ -229,7 +229,7 @@ impl ResEditApp {
         ui.label(backup_label(backup));
         ui.add(egui::Label::new(egui::RichText::new(&backup.path).monospace().small()).truncate())
             .on_hover_text(&backup.path);
-        match self.original {
+        match self.editor.original() {
             Some(original) if original != backup.state => {
                 ui.label(format!(
                     "Current file: {} — restoring will overwrite these values.",
@@ -294,16 +294,17 @@ impl ResEditApp {
                                 .add_filter("JSON report (*.json)", &["json"])
                                 .save_file()
                             {
-                                match export_diagnostics(&path, &self.diagnostics_json) {
-                                    Ok(()) => self.set_status(
-                                        &format!("Diagnostics exported to {}.", path.display()),
-                                        false,
-                                    ),
-                                    Err(err) => self.set_status(
-                                        &format!("Diagnostics export failed: {err}"),
-                                        true,
-                                    ),
-                                }
+                                self.status.report(
+                                    match export_diagnostics(&path, &self.diagnostics_json) {
+                                        Ok(()) => Notice::info(format!(
+                                            "Diagnostics exported to {}.",
+                                            path.display()
+                                        )),
+                                        Err(err) => Notice::warning(format!(
+                                            "Diagnostics export failed: {err}"
+                                        )),
+                                    },
+                                );
                             }
                         }
                     });
@@ -372,6 +373,20 @@ impl ResEditApp {
             None => {}
         }
     }
+}
+
+/// A highlighted warning message in the footer.
+fn warning_chip(ui: &mut egui::Ui, palette: ThemePalette, text: &str) {
+    egui::Frame::new()
+        .fill(palette.accent_soft)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(8.0)
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(format!("⚠ {text}")).color(palette.warning))
+                    .wrap(),
+            );
+        });
 }
 
 /// One-line backup summary: local timestamp, dimensions, and aspect family.

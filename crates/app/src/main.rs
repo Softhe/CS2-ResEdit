@@ -9,6 +9,7 @@ mod theme;
 
 use app::ResEditApp;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -49,10 +50,9 @@ fn main() {
                 .show();
             return;
         }
-        Err(err) => {
-            eprintln!("Could not check whether CS2 ResEdit is already running: {err}");
-            std::process::exit(1);
-        }
+        Err(err) => fail_startup(&format!(
+            "Could not check whether CS2 ResEdit is already running: {err}"
+        )),
     };
 
     let settings_path = std::env::var("CS2_RESEDIT_SETTINGS_PATH")
@@ -63,33 +63,145 @@ fn main() {
         .ok()
         .filter(|v| !v.trim().is_empty());
 
-    let icon = load_icon();
+    let launch = |renderer: Renderer, started: &AtomicBool| {
+        let settings_path = settings_path.clone();
+        let steam_root = steam_root.clone();
+        eframe::run_native(
+            "CS2 ResEdit",
+            native_options(renderer),
+            Box::new(move |_cc| {
+                started.store(true, Ordering::Relaxed);
+                Ok(Box::new(ResEditApp::new(settings_path, steam_root, None))
+                    as Box<dyn eframe::App>)
+            }),
+        )
+        .map_err(|err| (renderer, err.to_string()))
+    };
+    let setting = std::env::var_os("CS2_RESEDIT_RENDERER");
+    let setting = setting.as_ref().map(|value| value.to_string_lossy());
+    let renderers =
+        requested_renderers(setting.as_deref()).unwrap_or_else(|message| fail_startup(&message));
+    if let Err(failures) = run_with_fallback(renderers, launch) {
+        fail_startup(&startup_failure_text(&failures));
+    }
+}
+
+/// Graphics back ends the window can be drawn with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Renderer {
+    OpenGl,
+    #[cfg(windows)]
+    Direct3D12,
+}
+
+impl Renderer {
+    fn label(self) -> &'static str {
+        match self {
+            Self::OpenGl => "OpenGL",
+            #[cfg(windows)]
+            Self::Direct3D12 => "Direct3D 12",
+        }
+    }
+}
+
+/// Renderers to try in order for a `CS2_RESEDIT_RENDERER` value. OpenGL is
+/// the tested default; Direct3D 12 covers machines without a usable OpenGL
+/// driver, such as some virtual machines and Remote Desktop sessions. An
+/// unset value tries both; `opengl` or `d3d12` pins one. Anything else is an
+/// error, so a typo cannot silently select a different renderer.
+fn requested_renderers(setting: Option<&str>) -> Result<Vec<Renderer>, String> {
+    match setting
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None => Ok(vec![
+            Renderer::OpenGl,
+            #[cfg(windows)]
+            Renderer::Direct3D12,
+        ]),
+        Some("opengl" | "gl" | "glow") => Ok(vec![Renderer::OpenGl]),
+        #[cfg(windows)]
+        Some("d3d12" | "dx12" | "wgpu") => Ok(vec![Renderer::Direct3D12]),
+        _ => Err(format!(
+            "CS2_RESEDIT_RENDERER is set to '{}', which is not a supported renderer. \
+             Use {}, or remove the variable to choose automatically.",
+            setting.unwrap_or_default().trim(),
+            if cfg!(windows) {
+                "opengl or d3d12"
+            } else {
+                "opengl"
+            }
+        )),
+    }
+}
+
+/// Runs `launch` with each renderer until one succeeds. A renderer that
+/// already created the app is not retried with another one: its failure
+/// happened mid-session, and reopening the window would be surprising.
+fn run_with_fallback(
+    renderers: Vec<Renderer>,
+    mut launch: impl FnMut(Renderer, &AtomicBool) -> Result<(), (Renderer, String)>,
+) -> Result<(), Vec<(Renderer, String)>> {
+    let mut failures = Vec::new();
+    for renderer in renderers {
+        let started = AtomicBool::new(false);
+        match launch(renderer, &started) {
+            Ok(()) => return Ok(()),
+            Err(failure) => {
+                failures.push(failure);
+                if started.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+        }
+    }
+    Err(failures)
+}
+
+fn native_options(renderer: Renderer) -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("CS2 ResEdit")
         .with_inner_size(startup_inner_size())
         .with_resizable(false);
-    if let Some(icon) = icon {
+    if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(icon);
     }
-
-    let options = eframe::NativeOptions {
+    eframe::NativeOptions {
         viewport,
+        renderer: match renderer {
+            Renderer::OpenGl => eframe::Renderer::Glow,
+            #[cfg(windows)]
+            Renderer::Direct3D12 => eframe::Renderer::Wgpu,
+        },
         ..Default::default()
-    };
-    if let Err(err) = eframe::run_native(
-        "CS2 ResEdit",
-        options,
-        Box::new(move |_cc| {
-            Ok(Box::new(ResEditApp::new(
-                settings_path.clone(),
-                steam_root.clone(),
-                None,
-            )) as Box<dyn eframe::App>)
-        }),
-    ) {
-        eprintln!("CS2 ResEdit failed to start: {err}");
-        std::process::exit(1);
     }
+}
+
+fn startup_failure_text(failures: &[(Renderer, String)]) -> String {
+    let mut text = String::from("CS2 ResEdit could not open its window.\n");
+    for (renderer, error) in failures {
+        text.push_str(&format!("\n{}: {error}", renderer.label()));
+    }
+    text.push_str(
+        "\n\nUpdate the graphics driver and try again. Remote Desktop sessions and \
+         virtual machines without graphics acceleration may not support the window.",
+    );
+    text
+}
+
+/// Reports a fatal startup error and exits. The release build has no
+/// console, so the message must appear in a dialog to be seen at all.
+fn fail_startup(message: &str) -> ! {
+    eprintln!("{message}");
+    if !cfg!(debug_assertions) {
+        let _ = rfd::MessageDialog::new()
+            .set_title("CS2 ResEdit could not start")
+            .set_description(message)
+            .set_level(rfd::MessageLevel::Error)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+    std::process::exit(1);
 }
 
 #[cfg(any(windows, test))]
@@ -212,7 +324,10 @@ fn load_icon() -> Option<egui::IconData> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_inner_size, parse_command, Command};
+    use super::{
+        fit_inner_size, parse_command, run_with_fallback, startup_failure_text, Command, Renderer,
+    };
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn startup_size_fits_1280_by_960_work_area_at_common_dpi() {
@@ -238,6 +353,70 @@ mod tests {
             parse_command(&["--help".into(), "extra".into()]),
             Command::Unsupported
         );
+    }
+
+    #[test]
+    fn renderer_setting_accepts_known_names_and_rejects_typos() {
+        let automatic = super::requested_renderers(None).unwrap();
+        assert_eq!(automatic[0], Renderer::OpenGl);
+        assert!(super::requested_renderers(Some("")).is_err());
+        assert!(super::requested_renderers(Some("  ")).is_err());
+        assert_eq!(
+            super::requested_renderers(Some(" OpenGL ")).unwrap(),
+            vec![Renderer::OpenGl]
+        );
+        #[cfg(windows)]
+        {
+            assert_eq!(automatic, vec![Renderer::OpenGl, Renderer::Direct3D12]);
+            assert_eq!(
+                super::requested_renderers(Some("D3D12")).unwrap(),
+                vec![Renderer::Direct3D12]
+            );
+        }
+        let error = super::requested_renderers(Some("d3d21")).unwrap_err();
+        assert!(error.contains("'d3d21'"), "{error}");
+    }
+
+    #[test]
+    fn renderer_fallback_stops_at_success_or_mid_session_failure() {
+        // An explicit list: the result must not depend on the environment.
+        let renderers = vec![
+            Renderer::OpenGl,
+            #[cfg(windows)]
+            Renderer::Direct3D12,
+        ];
+
+        // Every renderer fails before the app exists: all are tried.
+        let mut tried = Vec::new();
+        let failures = run_with_fallback(renderers.clone(), |renderer, _| {
+            tried.push(renderer);
+            Err((renderer, "no device".into()))
+        })
+        .unwrap_err();
+        assert_eq!(tried, renderers);
+        assert_eq!(failures.len(), renderers.len());
+        let text = startup_failure_text(&failures);
+        assert!(text.contains("OpenGL: no device"), "{text}");
+        assert!(text.contains("graphics driver"));
+
+        // The first renderer works: nothing else runs.
+        let mut calls = 0;
+        assert!(run_with_fallback(renderers.clone(), |_, _| {
+            calls += 1;
+            Ok(())
+        })
+        .is_ok());
+        assert_eq!(calls, 1);
+
+        // A failure after the app started is reported, not retried.
+        let mut calls = 0;
+        let failures = run_with_fallback(renderers, |renderer, started| {
+            calls += 1;
+            started.store(true, Ordering::Relaxed);
+            Err((renderer, "lost device".into()))
+        })
+        .unwrap_err();
+        assert_eq!((calls, failures.len()), (1, 1));
     }
 
     #[cfg(windows)]

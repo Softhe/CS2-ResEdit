@@ -64,7 +64,7 @@ impl PreferencesService {
                 return result;
             }
         };
-        // File.ReadAllText in .NET strips a UTF-8 BOM; serde_json does not.
+        // Editors may add a UTF-8 BOM, which serde_json rejects.
         let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
         let parsed: Value = match serde_json::from_str(text) {
             Ok(value) => value,
@@ -82,7 +82,7 @@ impl PreferencesService {
             return result;
         };
         let invalid = || "Preferences could not be loaded: Invalid settings JSON.".to_string();
-        // A missing SchemaVersion keeps the C# initializer default of 1.
+        // Settings written by 1.x can omit SchemaVersion; treat that as 1.
         let schema = match field(object, "SchemaVersion") {
             None => 1,
             Some(Value::Null) | Some(Value::Bool(_)) => {
@@ -126,8 +126,8 @@ impl PreferencesService {
                 for item in items {
                     match item {
                         Value::String(text) => out.push(text.clone()),
-                        // Null entries are preserved as null in the C# list
-                        // and skipped by Clean.
+                        // Settings written by 1.x can contain null entries;
+                        // skip them like any other unusable path.
                         Value::Null => {}
                         _ => {
                             result.warning = Some(invalid());
@@ -248,8 +248,8 @@ fn normalize(candidate: &str) -> (String, String) {
     (full, key)
 }
 
-/// Case-insensitive property lookup, matching JsonSerializerOptions with
-/// PropertyNameCaseInsensitive = true.
+/// Case-insensitive property lookup; 1.x read property names without
+/// regard to case, so hand-edited files may use any casing.
 fn field<'v>(object: &'v Map<String, Value>, name: &str) -> Option<&'v Value> {
     object
         .iter()

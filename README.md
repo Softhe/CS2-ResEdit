@@ -7,7 +7,7 @@ CS2 ResEdit edits Counter-Strike 2 resolution and aspect settings on Windows. Ve
 ## Requirements
 
 - Windows 10 or Windows 11, x64.
-- A graphics driver that supports OpenGL 2.0 or later.
+- A graphics driver that supports OpenGL 2.0 or later, or Direct3D 12. The editor uses OpenGL and switches to Direct3D 12 when OpenGL cannot open the window.
 - A Steam installation with a CS2 video configuration, or a manually selected `cs2_video.txt`.
 
 The portable executable needs no installer, administrator rights, PowerShell runtime, or separately installed .NET runtime. The application works locally and does not upload your configuration or Steam account information.
@@ -61,7 +61,7 @@ Choose Theme in the header. The editor saves your choice for the next launch.
 
 The title-bar and running taskbar icons follow the theme. The executable's File Explorer icon remains static. When Windows High Contrast is on, the editor switches to a high-contrast palette and follows the setting while it runs.
 
-Hover over any closed dropdown and scroll down to select the next entry or up to select the previous entry. Selection stops at either end. This applies to accounts, displays, presets, aspect ratios, and themes. Open menus retain normal scrolling.
+Hover over any closed dropdown and scroll down to select the next entry or up to select the previous entry. Selection stops at either end. This applies to displays, presets, aspect ratios, and themes. The account selector ignores the wheel, because switching accounts opens another file. Open menus retain normal scrolling.
 
 The custom width and height fields also accept wheel input. Scroll up to increase a value or down to decrease it. Adjustments stay within the allowed dimension range. The `-` and `+` buttons beside each field step the value by one.
 
@@ -87,7 +87,7 @@ Choose Manage backups to inspect and restore a backup. Restoration validates the
 
 ## Preferences and upgrading from 1.1.0
 
-Close the old application and replace its executable with version 2.0.0. Existing CS2 files and recognized editor backups remain usable. No installation or configuration conversion is required.
+Close the old application and replace its executable with the current version. Existing CS2 files and recognized editor backups remain usable. No installation or configuration conversion is required.
 
 Preferences are stored at:
 
@@ -95,7 +95,9 @@ Preferences are stored at:
 %LOCALAPPDATA%\Softhe\CS2-ResEdit\v1\settings.json
 ```
 
-The `v1` directory names the preference schema, not the application release. Version 2.0.0 keeps that schema and adds an optional theme field. It remembers the last account, selected configuration, theme, and up to five recent valid files. A missing or unknown theme defaults to Glacier.
+The `v1` directory names the preference schema, not the application release. Version 2.0.0 and later keep that schema and add an optional theme field. The editor remembers the last account, selected configuration, theme, and up to five recent valid files. Changes are saved shortly after you make them and when the window closes. A missing or unknown theme defaults to Glacier.
+
+If the preference file cannot be read or saved, the footer shows a separate preferences warning next to the current status message.
 
 Preference files under other product names or unversioned directories are not imported or modified. Preferences contain local account IDs and file paths, but no credentials.
 
@@ -121,6 +123,10 @@ if ($actual -ne $expected) { throw 'The executable checksum does not match.' }
 A matching checksum confirms that the file matches the release asset. It does not verify a publisher signature.
 
 ## Troubleshooting
+
+### The window does not open
+
+The editor shows an error dialog when it cannot create its window, listing what failed for each graphics renderer. Update the graphics driver and try again. Remote Desktop sessions and virtual machines without graphics acceleration may not support either renderer. To choose a renderer yourself, set `CS2_RESEDIT_RENDERER` to `opengl` or `d3d12` before starting the editor.
 
 ### No account appears
 
@@ -164,7 +170,7 @@ Release assets are `CS2-ResEdit.exe` and `CS2-ResEdit.exe.sha256`. CI checks for
 
 A version tag must match the workspace version and the heading in `RELEASE_NOTES.md`. The release workflow uploads the tested Windows assets. `build/Sign-Release.ps1` supports optional manual Authenticode signing when a trusted publisher certificate is available. The current release process does not sign the executable.
 
-See [the changelog](CHANGELOG.md), [the roadmap](ROADMAP.md), and the dated [code audit](CODE_AUDIT_2026-09-29.md) and [codebase analysis](PROJECT-ANALYSIS-2026-09-29.md) for change history and remaining work.
+See [the changelog](CHANGELOG.md), [the roadmap](ROADMAP.md), and the dated reviews in [docs/history](docs/history) for change history and remaining work.
 
 ## License
 

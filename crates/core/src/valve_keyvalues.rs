@@ -30,7 +30,7 @@ impl KeyValuesObject {
     }
 }
 
-/// Valve KeyValues (VDF) parser mirroring the C# implementation.
+/// Minimal Valve KeyValues (VDF) parser for Steam's `loginusers.vdf`.
 pub struct ValveKeyValues;
 
 const MAX_NESTING_DEPTH: usize = 128;
