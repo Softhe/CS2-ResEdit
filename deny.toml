@@ -18,7 +18,13 @@ yanked = "warn"
 #   Transitive via atspi <- accesskit_unix <- egui-winit 0.32 on Linux only;
 #   the Windows release does not use them and no safe upgrade exists.
 #   Re-check when egui/accesskit move to zbus 6. Exception granted 2026-10-18.
-ignore = ["RUSTSEC-2026-0192", "RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372"]
+# - RUSTSEC-2026-0543 (chrono unmaintained): direct dependency of crates/core
+#   (backup file stamps, RFC 3339 diagnostics) and crates/app (backup label).
+#   All versions are affected and no patched release exists; 0.4.45 is the
+#   newest. The advisory suggests jiff or time as replacements, which is a
+#   source migration rather than a version bump. Re-check when that migration
+#   lands. Exception granted 2026-11-24.
+ignore = ["RUSTSEC-2026-0192", "RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372", "RUSTSEC-2026-0543"]
 
 [bans]
 multiple-versions = "warn"
